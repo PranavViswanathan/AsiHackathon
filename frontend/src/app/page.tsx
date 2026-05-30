@@ -67,7 +67,7 @@ export default function Page() {
   const [flightExposure, setFlightExposure] = useState<FlightExposure | null>(null);
   const [showWeather, setShowWeather] = useState(true);
   const [showAircraft, setShowAircraft] = useState(true);
-  const [showPaths, setShowPaths] = useState(false);
+  const [showPaths, setShowPaths] = useState(true);
   const [playing, setPlaying] = useState(false);
   const [clockMs, setClockMs] = useState(0);
 
