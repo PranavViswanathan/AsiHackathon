@@ -10,5 +10,6 @@ python-dotenv
 pyproj
 h3
 requests
+openap
 pytest
 httpx

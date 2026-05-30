@@ -32,6 +32,9 @@ All flights in the active scenario with their baseline fuel estimate.
     "lats": [40.64, 39.0, 34.0],
     "lons": [-73.78, -90.0, -118.4],
     "aircraft_class": "narrowbody",
+    "aircraft_type": "A320",
+    "fuel_flow_kg_hr": 2579.0,
+    "fuel_capacity_kg": 19000.0,
     "distance_nm": 2143.5,
     "time_hr": 4.66,
     "fuel_kg": 11650.0,
@@ -58,6 +61,12 @@ The `opt_*` / `fuel_saved_kg` / `recommended` fields describe the optimizer's
 recommended scenario for this flight (Phase 5): the optimized cruise altitude,
 any departure-time shift in minutes, the resulting fuel, and whether the flight
 was changed. The frontend's baseline/optimized toggle reads these.
+
+Fuel flow comes from OpenAP for a representative type inferred from the data
+(`regional→E190`, `narrowbody→A320`, `widebody→B789`) evaluated at the flight's
+cruise altitude/speed, so `fuel_flow_kg_hr` is altitude-aware. `aircraft_type` is
+an estimate (the bundle has no tail number); `fuel_capacity_kg` is the
+representative usable tank size, for context (e.g. trip fuel as a % of tank).
 
 The Phase 3 fields: `base_fuel_kg` is the zero-wind, no-storm reference;
 `headwind_nm`/`tailwind_nm` split the route by along-track wind sign;

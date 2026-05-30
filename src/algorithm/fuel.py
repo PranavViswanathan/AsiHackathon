@@ -1,14 +1,22 @@
 """Fuel-burn model (kg).
 
-With no wind or weather supplied this is the Phase 1 zero-wind, constant-cruise
-estimate (fuel = class fuel-flow x distance / TAS). Pass a `WindField` to make
-ground speed wind-aware, and a `WeatherGrid` to add a storm-avoidance penalty on
-convectively exposed segments. Both are optional and independent."""
+Fuel flow comes from OpenAP's engine/airframe model, evaluated at each flight's
+cruise altitude and speed for a representative aircraft type inferred from the
+data (the bundle has no tail number, so the type/engine is an estimate). Because
+the fuel flow is **altitude-dependent**, climbing to a more efficient level is a
+real fuel lever for the optimizer — not just a wind/storm effect.
+
+With no wind or weather supplied this is a zero-wind, constant-cruise estimate;
+pass a `WindField` to make ground speed wind-aware and a `WeatherGrid` to add a
+storm-avoidance penalty. If OpenAP is unavailable or returns nonsense for an
+input, the model falls back to a constant per-class fuel flow."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 from src.algorithm.grid import haversine_nm, initial_bearing_deg, route_distance_nm
 from src.data.ingest import Flight
@@ -19,11 +27,14 @@ CO2_PER_KG_FUEL = 3.16
 GROUND_SPEED_FLOOR_KT = 150.0  # guard against absurd ground speed under strong headwind
 STORM_FUEL_PENALTY = 0.15      # fractional fuel adder on a storm-exposed segment
 
-FUEL_FLOW_KG_HR = {
-    "regional": 1100.0,
-    "narrowbody": 2500.0,
-    "widebody": 6000.0,
-}
+# Representative airframe/engine per inferred class (no tail number in the bundle).
+CLASS_TO_TYPE = {"regional": "E190", "narrowbody": "A320", "widebody": "B789"}
+# Representative cruise mass (kg) for the OpenAP fuel-flow lookup.
+CLASS_CRUISE_MASS_KG = {"regional": 42000.0, "narrowbody": 65000.0, "widebody": 200000.0}
+# Approximate usable fuel capacity (kg) — context for "fuel on board", not used in burn.
+CLASS_FUEL_CAPACITY_KG = {"regional": 9000.0, "narrowbody": 19000.0, "widebody": 101000.0}
+# Fallback cruise fuel flow (kg/hr) when OpenAP is unavailable / out of envelope.
+FALLBACK_FUEL_FLOW_KG_HR = {"regional": 2000.0, "narrowbody": 2700.0, "widebody": 6800.0}
 
 
 def classify_aircraft(*, cruise_speed_kt: float, cruise_altitude_ft: float) -> str:
@@ -34,14 +45,42 @@ def classify_aircraft(*, cruise_speed_kt: float, cruise_altitude_ft: float) -> s
     return "widebody"
 
 
+@lru_cache(maxsize=None)
+def _fuel_flow_model(aircraft_type: str):
+    from openap import FuelFlow  # lazy: keep the module importable without OpenAP
+
+    return FuelFlow(ac=aircraft_type)
+
+
+@lru_cache(maxsize=8192)
+def cruise_fuel_flow_kg_hr(aircraft_class: str, altitude_ft: float, tas_kt: float) -> float:
+    """OpenAP cruise fuel flow (kg/hr) for a class at a given altitude/speed,
+    falling back to a per-class constant on any failure."""
+    fallback = FALLBACK_FUEL_FLOW_KG_HR[aircraft_class]
+    try:
+        model = _fuel_flow_model(CLASS_TO_TYPE[aircraft_class])
+        kg_per_s = model.enroute(
+            mass=CLASS_CRUISE_MASS_KG[aircraft_class],
+            tas=max(tas_kt, 100.0),
+            alt=max(altitude_ft, 1000.0),
+        )
+        kg_per_hr = float(kg_per_s) * 3600.0
+        if math.isfinite(kg_per_hr) and kg_per_hr > 0:
+            return kg_per_hr
+    except Exception:  # noqa: BLE001 - any OpenAP issue -> constant fallback
+        pass
+    return fallback
+
+
 @dataclass(frozen=True)
 class FuelEstimate:
     aircraft_class: str
+    aircraft_type: str
+    fuel_flow_kg_hr: float
     distance_nm: float
     time_hr: float
     fuel_kg: float
     co2_kg: float
-    # Phase 3 additions (defaults keep the zero-wind call backward compatible):
     base_fuel_kg: float = 0.0       # zero-wind, no-storm reference
     headwind_nm: float = 0.0        # distance flown into a headwind
     tailwind_nm: float = 0.0        # distance flown with a tailwind
@@ -61,7 +100,9 @@ def estimate_fuel(
         cruise_speed_kt=flight.cruise_speed_kt,
         cruise_altitude_ft=flight.cruise_altitude_ft,
     )
-    fuel_flow = FUEL_FLOW_KG_HR[aircraft_class]
+    fuel_flow = cruise_fuel_flow_kg_hr(
+        aircraft_class, flight.cruise_altitude_ft, flight.cruise_speed_kt
+    )
     tas = flight.cruise_speed_kt
     total_distance = route_distance_nm(lats, lons)
     duration_hr = _duration_hr(flight)
@@ -110,6 +151,8 @@ def estimate_fuel(
     mean_along = along_weighted / total_distance if total_distance > 0 else 0.0
     return FuelEstimate(
         aircraft_class=aircraft_class,
+        aircraft_type=CLASS_TO_TYPE[aircraft_class],
+        fuel_flow_kg_hr=round(fuel_flow, 1),
         distance_nm=total_distance,
         time_hr=time_hr,
         fuel_kg=fuel,
