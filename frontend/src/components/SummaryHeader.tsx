@@ -1,9 +1,15 @@
 "use client";
 
-import type { Summary } from "@/lib/data/types";
+import type { Summary, Scenario } from "@/lib/data/types";
 
 type Props = {
   summary: Summary | null;
+  scenario: Scenario;
+};
+
+const SCENARIO_LABEL: Record<Scenario, string> = {
+  baseline: "baseline",
+  recommended: "optimal",
 };
 
 function formatLarge(n: number): string {
@@ -49,7 +55,7 @@ function Stat({ label, value, unit }: StatProps) {
   );
 }
 
-export default function SummaryHeader({ summary }: Props) {
+export default function SummaryHeader({ summary, scenario }: Props) {
   if (!summary) {
     return (
       <header className="flex items-center gap-6 px-6 py-3 bg-gray-950 border-b border-gray-800">
@@ -67,7 +73,7 @@ export default function SummaryHeader({ summary }: Props) {
       <Stat label="CO2" value={formatLarge(summary.total_co2_kg)} unit="kg" />
       <Stat label="Distance" value={formatLarge(summary.total_distance_nm)} unit="nm" />
       <div className="ml-auto text-xs text-gray-500">
-        Snapshot: {formatSnapshot(summary.snapshot)} &bull; {summary.scenario}
+        Snapshot: {formatSnapshot(summary.snapshot)} &bull; {SCENARIO_LABEL[scenario]}
       </div>
     </header>
   );

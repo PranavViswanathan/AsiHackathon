@@ -101,6 +101,27 @@ export default function MapView({
   const containerRef = useRef<HTMLDivElement>(null);
   const deckRef = useRef<AnyObject | null>(null);
   const mapRef = useRef<AnyObject | null>(null);
+  // Layer constructors cached after first import so we can rebuild layers synchronously on hover.
+  const layerCtorsRef = useRef<{
+    PathLayer: new (props: AnyObject) => unknown;
+    GeoJsonLayer: new (props: AnyObject) => unknown;
+    H3HexagonLayer: new (props: AnyObject) => unknown;
+    TextLayer: new (props: AnyObject) => unknown;
+  } | null>(null);
+  // deck.gl/core helpers needed for the fly-to-flight behavior.
+  const viewportCtorRef = useRef<(new (props: AnyObject) => { fitBounds: (b: number[][], o: AnyObject) => AnyObject }) | null>(null);
+  const flyToCtorRef = useRef<(new (props: AnyObject) => unknown) | null>(null);
+
+  // Focus state: which flight (if any) is currently hovered.
+  const hoveredKeyRef = useRef<string | null>(null);
+  // Which flight is currently clicked/selected (drives the airport-code labels).
+  const selectedKeyRef = useRef<string | null>(null);
+
+  // Latest-value refs so the stable layer closures can reach current callbacks.
+  const refreshLayersRef = useRef<() => void>(() => {});
+  const zoomToFlightRef = useRef<(f: WebFlight) => void>(() => {});
+  const resetViewRef = useRef<() => void>(() => {});
+
   const ctxRef = useRef<LayerContext>({
     flights,
     sectors,
@@ -119,6 +140,7 @@ export default function MapView({
       PathLayer: new (props: AnyObject) => unknown,
       GeoJsonLayer: new (props: AnyObject) => unknown,
       H3HexagonLayer: new (props: AnyObject) => unknown,
+      TextLayer: new (props: AnyObject) => unknown,
       ctx: LayerContext
     ) => {
       const layers: unknown[] = [];
@@ -180,29 +202,178 @@ export default function MapView({
         );
       }
 
+      // A selected (clicked) flight stays focused regardless of mouse movement;
+      // otherwise hover drives the focus.
+      const focusKey = selectedKeyRef.current ?? hoveredKeyRef.current;
       layers.push(
         new PathLayer({
           id: "flights",
           data: ctx.flights,
           getPath: (d: WebFlight) => d.path,
-          getColor: (d: WebFlight) => scale.toRgb(d.fuel_kg),
-          getWidth: 2.5,
+          getColor: (d: WebFlight) => {
+            const base = scale.toRgb(d.fuel_kg);
+            // When a flight is focused, fade every other flight to barely visible.
+            if (focusKey && d.flight_key !== focusKey) {
+              return [base[0], base[1], base[2], 8];
+            }
+            return base;
+          },
+          getWidth: (d: WebFlight) =>
+            focusKey && d.flight_key === focusKey ? 4.5 : 2.5,
           widthUnits: "pixels",
           widthMinPixels: 2,
           capRounded: true,
           jointRounded: true,
           pickable: true,
-          updateTriggers: { getColor: [ctx.fuelDomain[0], ctx.fuelDomain[1]] },
+          autoHighlight: false,
+          updateTriggers: {
+            getColor: [ctx.fuelDomain[0], ctx.fuelDomain[1], focusKey],
+            getWidth: [focusKey],
+          },
           onClick: (info: AnyObject) => {
-            ctx.onSelectFlight((info.object as WebFlight | undefined) ?? null);
+            const obj = (info.object as WebFlight | undefined) ?? null;
+            selectedKeyRef.current = obj ? obj.flight_key : null;
+            ctx.onSelectFlight(obj);
+            refreshLayersRef.current();
+            // Zoom to frame the clicked flight's full path.
+            if (obj) zoomToFlightRef.current(obj);
+          },
+          onHover: (info: AnyObject) => {
+            // While a flight is selected, it stays focused — ignore hover changes.
+            if (selectedKeyRef.current !== null) return;
+            // Otherwise hover subdues the other flights (no camera movement).
+            const obj = info.object as WebFlight | undefined;
+            const newKey = obj ? obj.flight_key : null;
+            if (newKey === hoveredKeyRef.current) return;
+            hoveredKeyRef.current = newKey;
+            refreshLayersRef.current();
           },
         })
       );
+
+      // Airport-code labels at the endpoints of the selected flight's path.
+      const selectedKey = selectedKeyRef.current;
+      const selectedFlight = selectedKey
+        ? ctx.flights.find((f) => f.flight_key === selectedKey)
+        : undefined;
+      if (selectedFlight && selectedFlight.path.length > 0) {
+        const path = selectedFlight.path;
+        const labels = [
+          { position: path[0], text: selectedFlight.origin },
+          { position: path[path.length - 1], text: selectedFlight.destination },
+        ];
+        layers.push(
+          new TextLayer({
+            id: "flight-endpoints",
+            data: labels,
+            getPosition: (d: { position: [number, number] }) => d.position,
+            getText: (d: { text: string }) => d.text,
+            getSize: 15,
+            sizeUnits: "pixels",
+            getColor: [255, 255, 255, 255],
+            getPixelOffset: [0, -14],
+            fontWeight: 700,
+            background: true,
+            getBackgroundColor: [11, 18, 32, 220],
+            backgroundPadding: [5, 3],
+            getBorderColor: [51, 65, 85, 255],
+            getBorderWidth: 1,
+            outlineColor: [0, 0, 0, 255],
+            outlineWidth: 2,
+            pickable: false,
+            updateTriggers: { getText: [selectedKey], getPosition: [selectedKey] },
+          })
+        );
+      }
 
       return layers;
     },
     []
   );
+
+  // Rebuild and push layers synchronously (used by hover so the subdue is instant).
+  const refreshLayers = useCallback(() => {
+    const deck = deckRef.current;
+    const ctors = layerCtorsRef.current;
+    if (!deck || !ctors) return;
+    const layers = buildLayers(
+      ctors.PathLayer,
+      ctors.GeoJsonLayer,
+      ctors.H3HexagonLayer,
+      ctors.TextLayer,
+      ctxRef.current
+    );
+    (deck as { setProps: (props: AnyObject) => void }).setProps({ layers });
+  }, [buildLayers]);
+
+  // Fly the camera so the hovered flight's full path fits in view.
+  const zoomToFlight = useCallback((flight: WebFlight) => {
+    const deck = deckRef.current;
+    const Viewport = viewportCtorRef.current;
+    const FlyTo = flyToCtorRef.current;
+    const container = containerRef.current;
+    if (!deck || !Viewport || !FlyTo || !container || flight.path.length === 0) return;
+
+    let minLon = Infinity;
+    let minLat = Infinity;
+    let maxLon = -Infinity;
+    let maxLat = -Infinity;
+    for (const [lon, lat] of flight.path) {
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
+
+    const width = container.clientWidth || 800;
+    const height = container.clientHeight || 600;
+    let target: AnyObject;
+    try {
+      target = new Viewport({ width, height }).fitBounds(
+        [
+          [minLon, minLat],
+          [maxLon, maxLat],
+        ],
+        { padding: 90, maxZoom: 9 }
+      );
+    } catch {
+      return;
+    }
+
+    const zoom = target.zoom as number;
+    if (!Number.isFinite(zoom)) return;
+
+    (deck as { setProps: (props: AnyObject) => void }).setProps({
+      initialViewState: {
+        longitude: target.longitude as number,
+        latitude: target.latitude as number,
+        zoom: Math.min(zoom, 9),
+        pitch: 0,
+        bearing: 0,
+        transitionDuration: 700,
+        transitionInterpolator: new (FlyTo as new (props: AnyObject) => unknown)({ speed: 1.4 }),
+      },
+    });
+  }, []);
+
+  // Fly the camera back to the original full-map view.
+  const resetView = useCallback(() => {
+    const deck = deckRef.current;
+    const FlyTo = flyToCtorRef.current;
+    if (!deck || !FlyTo) return;
+    (deck as { setProps: (props: AnyObject) => void }).setProps({
+      initialViewState: {
+        ...INITIAL_VIEW,
+        transitionDuration: 700,
+        transitionInterpolator: new (FlyTo as new (props: AnyObject) => unknown)({ speed: 1.4 }),
+      },
+    });
+  }, []);
+
+  // Keep latest-value refs in sync for the stable layer closures.
+  refreshLayersRef.current = refreshLayers;
+  zoomToFlightRef.current = zoomToFlight;
+  resetViewRef.current = resetView;
 
   useEffect(() => {
     let cancelled = false;
@@ -210,15 +381,30 @@ export default function MapView({
     async function init() {
       if (!containerRef.current) return;
 
-      const [{ Deck }, { PathLayer, GeoJsonLayer }, { H3HexagonLayer }, maplibregl] =
-        await Promise.all([
-          import("@deck.gl/core"),
-          import("@deck.gl/layers"),
-          import("@deck.gl/geo-layers"),
-          import("maplibre-gl"),
-        ]);
+      const [
+        { Deck, WebMercatorViewport, FlyToInterpolator },
+        { PathLayer, GeoJsonLayer, TextLayer },
+        { H3HexagonLayer },
+        maplibregl,
+      ] = await Promise.all([
+        import("@deck.gl/core"),
+        import("@deck.gl/layers"),
+        import("@deck.gl/geo-layers"),
+        import("maplibre-gl"),
+      ]);
 
       if (cancelled || !containerRef.current) return;
+
+      layerCtorsRef.current = {
+        PathLayer: PathLayer as unknown as new (props: AnyObject) => unknown,
+        GeoJsonLayer: GeoJsonLayer as unknown as new (props: AnyObject) => unknown,
+        H3HexagonLayer: H3HexagonLayer as unknown as new (props: AnyObject) => unknown,
+        TextLayer: TextLayer as unknown as new (props: AnyObject) => unknown,
+      };
+      viewportCtorRef.current = WebMercatorViewport as unknown as new (
+        props: AnyObject
+      ) => { fitBounds: (b: number[][], o: AnyObject) => AnyObject };
+      flyToCtorRef.current = FlyToInterpolator as unknown as new (props: AnyObject) => unknown;
 
       const container = containerRef.current;
       const mapContainer = document.createElement("div");
@@ -242,10 +428,22 @@ export default function MapView({
         initialViewState: INITIAL_VIEW,
         controller: true,
         getTooltip,
+        // Clicking empty space (no flight picked) clears the selection + labels.
+        onClick: (info: AnyObject) => {
+          if (info.object) return;
+          if (selectedKeyRef.current === null) return;
+          selectedKeyRef.current = null;
+          hoveredKeyRef.current = null;
+          ctxRef.current.onSelectFlight(null);
+          refreshLayersRef.current();
+          // Zoom back out to the original full-map view.
+          resetViewRef.current();
+        },
         layers: buildLayers(
           PathLayer as unknown as new (props: AnyObject) => unknown,
           GeoJsonLayer as unknown as new (props: AnyObject) => unknown,
           H3HexagonLayer as unknown as new (props: AnyObject) => unknown,
+          TextLayer as unknown as new (props: AnyObject) => unknown,
           ctxRef.current
         ),
         onViewStateChange: (params: AnyObject) => {
@@ -282,7 +480,7 @@ export default function MapView({
     if (!deckRef.current) return;
 
     async function updateLayers() {
-      const [{ PathLayer, GeoJsonLayer }, { H3HexagonLayer }] = await Promise.all([
+      const [{ PathLayer, GeoJsonLayer, TextLayer }, { H3HexagonLayer }] = await Promise.all([
         import("@deck.gl/layers"),
         import("@deck.gl/geo-layers"),
       ]);
@@ -293,6 +491,7 @@ export default function MapView({
         PathLayer as unknown as new (props: AnyObject) => unknown,
         GeoJsonLayer as unknown as new (props: AnyObject) => unknown,
         H3HexagonLayer as unknown as new (props: AnyObject) => unknown,
+        TextLayer as unknown as new (props: AnyObject) => unknown,
         ctxRef.current
       );
 
