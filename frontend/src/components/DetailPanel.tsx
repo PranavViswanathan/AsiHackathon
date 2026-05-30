@@ -64,7 +64,7 @@ export default function DetailPanel({ flight, fuelDomain, scenario }: Props) {
         </div>
         <div>
           <p className="text-xs text-gray-400">Distance</p>
-          <p className="font-mono">{formatNumber(flight.distance_nm, 1)} nm</p>
+          <p className="font-mono">{formatNumber(flight.distance_nm, 1)} NM</p>
         </div>
         <div>
           <p className="text-xs text-gray-400">Fuel</p>
