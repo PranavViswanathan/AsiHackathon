@@ -64,19 +64,29 @@ cost = base_distance
 `lambda_sector` and `lambda_weather` are the two knobs exposed to the UI; they
 let the operator trade off delay against congestion relief and weather margin.
 
-## Weather Penalty
+## Weather: soft penalty + hard constraint
 
-```
-weather_penalty = 0                if refc < 40 dBZ and cruise_alt > retop
-weather_penalty = LARGE_CONSTANT   otherwise
-```
+> The cost-function / iterative-Dijkstra framing above is the original design.
+> The shipped pipeline implements the fuel-proxy + staged optimizer described
+> here. Both parts key on the same **exposure** test: a flight is exposed at a
+> point when `refc >= 40 dBZ AND cruise_alt < retop` (read through
+> `WeatherGrid.exposure` at the flight's time bin, so it tracks the moving
+> weather).
 
-A cell is free of weather cost only when its composite reflectivity is below the
-40 dBZ danger threshold **and** the flight's cruise altitude clears the storm
-top at that cell. Otherwise it incurs a large constant that makes the cell
-effectively impassable unless no alternative exists. `refc` and `retop` are read
-through `WeatherGrid` at the flight's time bin, so penalties track the moving
-weather.
+1. **Soft cost penalty.** Each exposed route segment adds a **+15%** fuel-burn
+   penalty (`STORM_FUEL_PENALTY` in `src/algorithm/fuel.py`) and accumulates the
+   per-flight `storm_nm` (exposed distance). This prices weather into the fuel
+   estimate but never forbids anything by itself.
+
+2. **Hard constraint.** The optimizer's altitude pass
+   (`src/algorithm/optimize.py`) treats storm-exposed distance as a hard
+   constraint to be minimized **before** fuel: candidate cruise levels are
+   compared lexicographically by `(storm_nm, fuel_kg)`, so an exposed flight is
+   moved to a storm-free altitude **even when that costs more fuel**. When no
+   reachable altitude clears the storm (echo-top above cruise), the flight is left
+   at its least-exposed level and reported as `unresolved_storm_flights` in the
+   summary (lateral rerouting is out of scope). The summary also carries
+   `storm_flights_before/after` and `storm_nm_before/after`.
 
 ## Iterative Solver Loop
 

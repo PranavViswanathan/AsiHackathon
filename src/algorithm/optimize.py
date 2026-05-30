@@ -36,6 +36,7 @@ ALT_CANDIDATES_FT = (-4000, -2000, 2000, 4000)
 ALT_MIN_FT, ALT_MAX_FT = 28000.0, 43000.0
 DEPARTURE_SHIFTS_MIN = (-15, -10, -5, 5, 10, 15)
 MIN_FUEL_GAIN_KG = 1.0  # ignore sub-kg altitude "improvements"
+EPS_STORM_NM = 0.5      # ignore sub-half-nm storm "reductions"
 
 
 @dataclass
@@ -78,7 +79,15 @@ def optimize(
             if not (ALT_MIN_FT <= cand_alt <= ALT_MAX_FT):
                 continue
             cand = estimate_fuel(replace(flight, cruise_altitude_ft=cand_alt), wind=wind, weather=weather)
-            if cand.fuel_kg < best_est.fuel_kg - MIN_FUEL_GAIN_KG:
+            # Hard storm constraint first (minimize exposed distance), then fuel:
+            # a storm-reducing altitude is adopted even if it costs more fuel; when
+            # storm exposure ties, fall back to the usual fuel minimization.
+            less_storm = cand.storm_nm < best_est.storm_nm - EPS_STORM_NM
+            same_storm_less_fuel = (
+                abs(cand.storm_nm - best_est.storm_nm) <= EPS_STORM_NM
+                and cand.fuel_kg < best_est.fuel_kg - MIN_FUEL_GAIN_KG
+            )
+            if less_storm or same_storm_less_fuel:
                 best_est, best_alt = cand, cand_alt
         if best_alt != flight.cruise_altitude_ft:
             opt_alt[i], opt_est[i] = best_alt, best_est
@@ -119,6 +128,12 @@ def optimize(
         "n_departure_changes": n_departure,
         "overloaded_sectors_before": overloaded_before,
         "overloaded_sectors_after": overloaded_after,
+        # Hard storm constraint: exposed flights the altitude pass resolved vs. left.
+        "storm_flights_before": sum(1 for e in baseline if e.storm_nm > 0),
+        "storm_flights_after": sum(1 for e in opt_est if e.storm_nm > 0),
+        "unresolved_storm_flights": sum(1 for e in opt_est if e.storm_nm > 0),
+        "storm_nm_before": round(sum(e.storm_nm for e in baseline), 1),
+        "storm_nm_after": round(sum(e.storm_nm for e in opt_est), 1),
     }
     return OptimizeResult(
         estimates=opt_est,
@@ -187,9 +202,10 @@ def _n_overloaded_sectors(counts: dict[Key, int], caps: dict[str, int]) -> int:
 
 
 def _alt_change(flight, base: FuelEstimate, after: FuelEstimate, new_alt: float) -> dict:
-    cleared = base.storm_nm > 0 and after.storm_nm == 0
-    if cleared:
-        reason = f"climb/descend to {int(new_alt)} ft to overfly the storm top"
+    if base.storm_nm > 0 and after.storm_nm == 0:
+        reason = f"divert to {int(new_alt)} ft to clear the storm (hard constraint)"
+    elif after.storm_nm < base.storm_nm - 0.5:
+        reason = f"shift cruise to {int(new_alt)} ft to reduce storm exposure"
     else:
         reason = f"shift cruise to {int(new_alt)} ft for more favorable winds"
     return {
