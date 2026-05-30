@@ -1,13 +1,33 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, memo } from "react";
 import dynamic from "next/dynamic";
-import SummaryHeader from "@/components/SummaryHeader";
-import ControlPanel from "@/components/ControlPanel";
-import DetailPanel from "@/components/DetailPanel";
-import SavingsPanel from "@/components/SavingsPanel";
-import FilterPanel, { DEFAULT_FILTERS, type Filters } from "@/components/FilterPanel";
+import SummaryHeaderBase from "@/components/SummaryHeader";
+import ControlPanelBase from "@/components/ControlPanel";
+import DetailPanelBase from "@/components/DetailPanel";
+import SavingsPanelBase from "@/components/SavingsPanel";
+import FilterPanelBase, { DEFAULT_FILTERS, type Filters } from "@/components/FilterPanel";
+import TimelineControl from "@/components/TimelineControl";
+
+// Memoized so the high-frequency animation clock (which only feeds MapView and
+// TimelineControl) doesn't re-render these otherwise-static panels every frame.
+const SummaryHeader = memo(SummaryHeaderBase);
+const ControlPanel = memo(ControlPanelBase);
+const DetailPanel = memo(DetailPanelBase);
+const SavingsPanel = memo(SavingsPanelBase);
+const FilterPanel = memo(FilterPanelBase);
 import { getDataSource } from "@/lib/data";
+import {
+  loadWeatherManifest,
+  preloadWeatherFrames,
+  type LoadedWeather,
+} from "@/lib/weather";
+import {
+  loadFlightTimes,
+  loadFlightExposure,
+  type FlightTimes,
+  type FlightExposure,
+} from "@/lib/flightAnim";
 import type {
   WebFlight,
   SectorsGeoJSON,
@@ -41,6 +61,15 @@ export default function Page() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Time animation (shared clock drives both the weather radar and aircraft)
+  const [weather, setWeather] = useState<LoadedWeather | null>(null);
+  const [flightTimes, setFlightTimes] = useState<FlightTimes | null>(null);
+  const [flightExposure, setFlightExposure] = useState<FlightExposure | null>(null);
+  const [showWeather, setShowWeather] = useState(true);
+  const [showAircraft, setShowAircraft] = useState(true);
+  const [showPaths, setShowPaths] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [clockMs, setClockMs] = useState(0);
 
   const filteredFlights = useMemo(() => {
     const query = filters.search.trim().toUpperCase();
@@ -64,6 +93,24 @@ export default function Page() {
     const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
     return [min, p95 > min ? p95 : min + 1];
   }, [flights]);
+
+  // Clock range comes from the weather frames (the established 18h timeline).
+  const clockRange = useMemo<[number, number]>(() => {
+    if (!weather || weather.frames.length === 0) return [0, 0];
+    const t0 = Date.parse(weather.frames[0].validAt);
+    const tEnd = Date.parse(weather.frames[weather.frames.length - 1].validAt);
+    return [t0, tEnd];
+  }, [weather]);
+
+  // Weather image for the current clock time = nearest 15-min frame.
+  const currentWeatherFrame = useMemo(() => {
+    if (!weather || weather.frames.length === 0) return null;
+    const [t0, tEnd] = clockRange;
+    const span = tEnd - t0 || 1;
+    const frac = Math.min(1, Math.max(0, (clockMs - t0) / span));
+    const idx = Math.round(frac * (weather.frames.length - 1));
+    return weather.frames[idx];
+  }, [weather, clockRange, clockMs]);
 
   useEffect(() => {
     const ds = getDataSource();
@@ -110,14 +157,84 @@ export default function Page() {
     }
   }, [snapshot, scenario]);
 
+  // Load the time-animation data (radar frames + flight schedule) per snapshot.
+  useEffect(() => {
+    let cancelled = false;
+    setWeather(null);
+    setFlightTimes(null);
+    setPlaying(false);
+    setClockMs(0);
+    loadWeatherManifest(snapshot).then((w) => {
+      if (cancelled || !w) return;
+      setWeather(w);
+      setClockMs(Date.parse(w.frames[0].validAt)); // start at the snapshot time
+      preloadWeatherFrames(w.frames);
+    });
+    loadFlightTimes(snapshot).then((ft) => {
+      if (cancelled || !ft) return;
+      setFlightTimes(ft);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [snapshot]);
+
+  // Per-flight weather exposure depends on the scenario (altitude + departure
+  // differ when optimized), so reload it whenever either changes.
+  useEffect(() => {
+    let cancelled = false;
+    setFlightExposure(null);
+    loadFlightExposure(snapshot, scenario).then((ex) => {
+      if (cancelled || !ex) return;
+      setFlightExposure(ex);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [snapshot, scenario]);
+
+  // Master clock: advance smoothly while playing, traversing the full window in
+  // ~PLAYBACK_SECONDS of wall time, then loop back to the start.
+  useEffect(() => {
+    if (!playing) return;
+    const [t0, tEnd] = clockRange;
+    const span = tEnd - t0;
+    if (span <= 0) return;
+    const PLAYBACK_SECONDS = 45;
+    const speed = span / (PLAYBACK_SECONDS * 1000); // sim-ms per real-ms
+    let raf = 0;
+    let last: number | null = null;
+    const step = (now: number) => {
+      if (last !== null) {
+        const dt = now - last;
+        setClockMs((c) => {
+          const next = c + dt * speed;
+          return next >= tEnd ? t0 : next;
+        });
+      }
+      last = now;
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, clockRange]);
+
   const handleSelectFlight = useCallback((f: WebFlight | null) => {
     setSelectedFlight(f);
   }, []);
 
   const handleScenarioChange = useCallback((s: Scenario) => {
-    setSelectedFlight(null);
     setScenario(s);
   }, []);
+
+  // After flights reload (e.g. scenario switch), re-point the active flight at
+  // the freshly loaded object so it stays selected with up-to-date data.
+  useEffect(() => {
+    setSelectedFlight((prev) => {
+      if (!prev) return prev;
+      return flights.find((f) => f.flight_key === prev.flight_key) ?? prev;
+    });
+  }, [flights]);
 
   const handleResetFilters = useCallback(() => {
     setFilters(DEFAULT_FILTERS);
@@ -174,18 +291,46 @@ export default function Page() {
             </div>
           )}
           {viewMode === "2d" ? (
-            <MapView
-              flights={filteredFlights}
-              sectors={sectors}
-              h3Cells={h3Cells}
-              showSectors={showSectors}
-              showH3={showH3}
-              h3Mode={h3Mode}
-              fuelDomain={fuelDomain}
-              selectedFlight={selectedFlight}
-              scenario={scenario}
-              onSelectFlight={handleSelectFlight}
-            />
+            <>
+              <MapView
+                flights={filteredFlights}
+                sectors={sectors}
+                h3Cells={h3Cells}
+                showSectors={showSectors}
+                showH3={showH3}
+                h3Mode={h3Mode}
+                fuelDomain={fuelDomain}
+                selectedFlight={selectedFlight}
+                scenario={scenario}
+                onSelectFlight={handleSelectFlight}
+                showWeather={showWeather}
+                weatherBounds={weather?.bounds ?? null}
+                weatherFrameUrl={currentWeatherFrame?.url ?? null}
+                showAircraft={showAircraft}
+                flightTimes={flightTimes}
+                clockMs={clockMs}
+                showPaths={showPaths}
+                flightExposure={flightExposure}
+                weatherFrameIndex={currentWeatherFrame?.index ?? 0}
+              />
+              <TimelineControl
+                available={!!weather || !!flightTimes}
+                clockMs={clockMs}
+                minMs={clockRange[0]}
+                maxMs={clockRange[1]}
+                onClockChange={setClockMs}
+                playing={playing}
+                onPlayingChange={setPlaying}
+                weatherAvailable={!!weather}
+                showWeather={showWeather}
+                onShowWeatherChange={setShowWeather}
+                aircraftAvailable={!!flightTimes}
+                showAircraft={showAircraft}
+                onShowAircraftChange={setShowAircraft}
+                showPaths={showPaths}
+                onShowPathsChange={setShowPaths}
+              />
+            </>
           ) : (
             <Scene3D flights={filteredFlights} fuelDomain={fuelDomain} scenario={scenario} />
           )}
