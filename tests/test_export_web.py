@@ -22,6 +22,7 @@ def _artifacts(tmp_path):
             "cruise_altitude_ft": 35000.0, "aircraft_class": "narrowbody", "aircraft_type": "A320",
             "is_airborne": False, "distance_nm": 2000.0,
             "lats": [40.6, 34.0], "lons": [-73.8, -118.4],
+            "opt_lats": [40.6, 45.0, 34.0], "opt_lons": [-73.8, -90.0, -118.4],
             "fuel_kg": 9000.0, "co2_kg": 28440.0,
             "opt_fuel_kg": 8000.0, "opt_cruise_altitude_ft": 39000.0,
             "opt_departure_shift_min": -5, "fuel_saved_kg": 1000.0, "recommended": True,
@@ -90,6 +91,8 @@ def test_web_flight_carries_optimized_and_savings_fields(tmp_path):
     assert aaa["cost_saved_usd"] == approx(850.0)
     assert aaa["recommended"] is True
     assert "winds" in aaa["recommendation"]
+    assert len(aaa["opt_path"]) == 3  # rerouted geometry carried through
+    assert aaa["opt_path"] != aaa["path"]
 
 
 def test_summary_optimization_has_cost_and_co2(tmp_path):

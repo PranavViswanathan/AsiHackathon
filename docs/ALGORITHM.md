@@ -78,15 +78,31 @@ let the operator trade off delay against congestion relief and weather margin.
    per-flight `storm_nm` (exposed distance). This prices weather into the fuel
    estimate but never forbids anything by itself.
 
-2. **Hard constraint.** The optimizer's altitude pass
+2. **Hard constraint (altitude).** The optimizer's altitude pass
    (`src/algorithm/optimize.py`) treats storm-exposed distance as a hard
    constraint to be minimized **before** fuel: candidate cruise levels are
    compared lexicographically by `(storm_nm, fuel_kg)`, so an exposed flight is
-   moved to a storm-free altitude **even when that costs more fuel**. When no
-   reachable altitude clears the storm (echo-top above cruise), the flight is left
-   at its least-exposed level and reported as `unresolved_storm_flights` in the
-   summary (lateral rerouting is out of scope). The summary also carries
-   `storm_flights_before/after` and `storm_nm_before/after`.
+   moved to a storm-free altitude **even when that costs more fuel**.
+
+3. **Hard constraint (lateral A\* reroute).** When no reachable altitude clears
+   the storm (echo-top above cruise), a second pass (`src/algorithm/astar.py`)
+   reroutes the flight *around* the storm:
+   - **Nodes** = cells of the refc/retop grid, downsampled (~50 nm), confined to
+     the origin–destination bounding box + margin. A cell's lat/lon is its center.
+   - **Edges** = the 8 neighbor cells. **Edge cost** = the same wind-aware fuel
+     proxy the simulator uses (`haversine_nm`, `WindField.along_track_kt`,
+     `cruise_fuel_flow_kg_hr`). A cell is a **forbidden node** when it is
+     storm-exposed at the flight's estimated time there (the hard constraint as a
+     graph cut); origin/destination cells are always allowed.
+   - **Heuristic** = great-circle distance to the destination × the minimum
+     possible fuel-per-nm (`ff / (TAS + 250 kt)`), which never overestimates →
+     A\* stays optimal.
+   - The detour is re-costed with `estimate_fuel`; adopted only if it actually
+     reduces `storm_nm`, and rejected if it exceeds 1.6× the direct distance.
+
+Flights that neither altitude nor a bounded reroute can clear are reported as
+`unresolved_storm_flights`. The summary also carries `n_reroutes`,
+`storm_flights_before/after`, and `storm_nm_before/after`.
 
 ## Iterative Solver Loop
 

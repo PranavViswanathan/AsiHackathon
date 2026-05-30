@@ -17,3 +17,7 @@ export function displayAltitude(f: WebFlight, scenario: Scenario): number {
 export function displayCo2(f: WebFlight, scenario: Scenario): number {
   return scenario === "recommended" ? f.opt_co2_kg ?? f.co2_kg : f.co2_kg;
 }
+
+export function displayPath(f: WebFlight, scenario: Scenario): [number, number][] {
+  return scenario === "recommended" ? f.opt_path ?? f.path : f.path;
+}

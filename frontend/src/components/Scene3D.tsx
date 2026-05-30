@@ -5,7 +5,7 @@ import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Line, Grid } from "@react-three/drei";
 import type { WebFlight, Scenario } from "@/lib/data/types";
 import { makeFuelScale } from "@/lib/fuelColor";
-import { displayAltitude, displayFuel } from "@/lib/scenario";
+import { displayAltitude, displayFuel, displayPath } from "@/lib/scenario";
 
 type Props = {
   flights: WebFlight[];
@@ -38,9 +38,10 @@ type FlightLineProps = {
 
 function FlightLine({ flight, scenario, color }: FlightLineProps) {
   const altitude = displayAltitude(flight, scenario);
+  const path = displayPath(flight, scenario);
   const points = useMemo(
-    () => projectPath(flight.path, altitude),
-    [flight.path, altitude]
+    () => projectPath(path, altitude),
+    [path, altitude]
   );
 
   if (points.length < 2) return null;

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import type { WebFlight, SectorsGeoJSON, H3Cell, H3Mode, Scenario } from "@/lib/data/types";
 import { makeFuelScale } from "@/lib/fuelColor";
-import { displayFuel } from "@/lib/scenario";
+import { displayFuel, displayPath } from "@/lib/scenario";
 
 type Props = {
   flights: WebFlight[];
@@ -216,7 +216,7 @@ export default function MapView({
         new PathLayer({
           id: "flights",
           data: ctx.flights,
-          getPath: (d: WebFlight) => d.path,
+          getPath: (d: WebFlight) => displayPath(d, ctx.scenario),
           getColor: (d: WebFlight) => {
             const base = scale.toRgb(displayFuel(d, ctx.scenario));
             // The focused flight is full color; every other flight is dimmed.
@@ -236,6 +236,7 @@ export default function MapView({
           pickable: true,
           autoHighlight: false,
           updateTriggers: {
+            getPath: [ctx.scenario],
             getColor: [ctx.fuelDomain[0], ctx.fuelDomain[1], focusKey, ctx.scenario],
             getWidth: [focusKey],
           },
