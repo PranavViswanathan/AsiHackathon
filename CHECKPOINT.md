@@ -88,3 +88,55 @@ make build             # writes data/artifacts/<snapshot>/
 ```
 
 **Next:** Phase 2 — FastAPI backend serving these artifacts.
+
+---
+
+## Frontend slice — static-data UI, API-ready
+
+**Goal:** build the `frontend/` app reading static JSON now, designed to swap to
+the live API later by changing one env var. deck.gl + MapLibre (2D) and Three.js
+(3D), toggleable.
+
+**Done:**
+- `src/export_web.py` — exports lean static JSON from pipeline artifacts to
+  `frontend/public/data/<snapshot>/`: `flights_baseline.json` (top 1,500 flights
+  by fuel, rounded coords, `path` as `[lon,lat]`), `sectors.json` (712 sectors +
+  empty `load_by_bin`), `h3_fuel.json` (`[]`), `summary.json`; plus
+  `snapshots.json` with the showcase id. CLI `--snapshot`/`--max-flights`.
+- Next.js 14 (App Router) + TypeScript (strict) + Tailwind app under `frontend/`.
+- **Swappable data layer** (`frontend/src/lib/data/`): `DataSource` interface;
+  `StaticDataSource` (reads `/data/...` files), `ApiDataSource` (hits the planned
+  FastAPI endpoints), `getDataSource()` factory selecting impl from
+  `NEXT_PUBLIC_DATA_SOURCE`. Components only call the interface, never fetch
+  directly. 8 Vitest tests cover URL routing + factory selection.
+- Components: `MapView` (deck.gl PathLayer colored by fuel via d3 turbo, sectors
+  GeoJsonLayer, H3HexagonLayer; MapLibre CARTO dark basemap), `Scene3D`
+  (react-three-fiber, samples <=500 paths), `ControlPanel` (2D/3D + layer +
+  scenario toggles, fuel legend), `DetailPanel`, `SummaryHeader`. Map/3D are
+  client-only via `next/dynamic` `{ssr:false}`.
+- `frontend/.env.local.example` with `NEXT_PUBLIC_DATA_SOURCE`,
+  `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SNAPSHOT`.
+
+**Verified:**
+- `npm run build` -> compiled successfully (route `/` ~100 kB First Load JS).
+- `npx vitest run` -> 8 passed.
+- `npm run dev` -> `GET /` 200; static data files 200; 4647 modules compiled.
+
+**Switch static -> API later:** set `NEXT_PUBLIC_DATA_SOURCE=api` and
+`NEXT_PUBLIC_API_URL` in `frontend/.env.local`. No component changes.
+
+**Limitations / deferred:**
+- H3 layer renders empty until Phase 4 produces `h3_fuel.json`.
+- Only the baseline scenario exists; `recommended` toggle is inert until the
+  optimizer (Phase 5) emits `flights_recommended.json`.
+- Static flights are downsampled to 1,500 for browser performance.
+- deck.gl 9.x layer constructors needed `unknown` casts under the SSR
+  dynamic-import pattern (noted by the builder).
+
+**Run it:**
+```
+make build                                          # pipeline artifacts
+.venv/bin/python -m src.export_web --snapshot asked_at_2025-05-29T21:00:00Z
+make install-web                                    # npm install
+make frontend                                       # next dev on :3000
+```
