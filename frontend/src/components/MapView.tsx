@@ -12,6 +12,7 @@ type Props = {
   showH3: boolean;
   h3Mode: H3Mode;
   fuelDomain: [number, number];
+  selectedFlight: WebFlight | null;
   onSelectFlight: (flight: WebFlight | null) => void;
 };
 
@@ -96,6 +97,7 @@ export default function MapView({
   showH3,
   h3Mode,
   fuelDomain,
+  selectedFlight,
   onSelectFlight,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -212,11 +214,13 @@ export default function MapView({
           getPath: (d: WebFlight) => d.path,
           getColor: (d: WebFlight) => {
             const base = scale.toRgb(d.fuel_kg);
-            // When a flight is focused, fade every other flight to barely visible.
-            if (focusKey && d.flight_key !== focusKey) {
-              return [base[0], base[1], base[2], 8];
+            // The focused flight is full color; every other flight is dimmed.
+            // With nothing focused (e.g. initial load) all flights read as a
+            // muted backdrop so the view isn't overwhelming.
+            if (focusKey && d.flight_key === focusKey) {
+              return base;
             }
-            return base;
+            return [base[0], base[1], base[2], focusKey ? 8 : 45];
           },
           getWidth: (d: WebFlight) =>
             focusKey && d.flight_key === focusKey ? 4.5 : 2.5,
@@ -374,6 +378,21 @@ export default function MapView({
   refreshLayersRef.current = refreshLayers;
   zoomToFlightRef.current = zoomToFlight;
   resetViewRef.current = resetView;
+
+  // React to selection driven from outside the map (e.g. the search box): focus
+  // the flight, redraw, and zoom to frame it — or reset the view when cleared.
+  useEffect(() => {
+    const key = selectedFlight ? selectedFlight.flight_key : null;
+    if (key === selectedKeyRef.current) return;
+    selectedKeyRef.current = key;
+    hoveredKeyRef.current = null;
+    refreshLayers();
+    if (selectedFlight) {
+      zoomToFlight(selectedFlight);
+    } else {
+      resetView();
+    }
+  }, [selectedFlight, refreshLayers, zoomToFlight, resetView]);
 
   useEffect(() => {
     let cancelled = false;
