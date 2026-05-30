@@ -1,10 +1,10 @@
 """Pipeline orchestrator: load a scenario, estimate fuel per flight (optionally
-wind-aware, with a storm-avoidance penalty), and write the per-snapshot
-artifacts (flights.json, summary.json, h3.json).
+wind-aware, with a storm-avoidance penalty), aggregate the H3 heatmap and sector
+occupancy, run the staged optimizer, and write the per-snapshot artifacts
+(flights.json, summary.json, h3.json, sectors.json, recommendations.json).
 
-Storms are sampled from the local weather strips and are on by default (no
-network). Winds come from Open-Meteo and are opt-in (`--wind` / `use_wind=True`)
-since they require a network fetch on first run; the result is cached to
+Storms + sectors + the optimizer are on by default (no network). Winds come from
+Open-Meteo and are opt-in (`--wind` / `use_wind=True`); the result is cached to
 `wind_cache.npz` and the build degrades to zero-wind on any fetch failure."""
 
 from __future__ import annotations
@@ -12,11 +12,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from src.algorithm.fuel import FuelEstimate, estimate_fuel
 from src.algorithm.h3agg import aggregate_h3
-from src.algorithm.sectors import aggregate_sectors
+from src.algorithm.optimize import OptimizeResult, optimize
+from src.algorithm.sectors import (
+    DEFAULT_BIN_MINUTES,
+    compute_occupancy,
+    format_sectors,
+    load_bands,
+    n_bins_for,
+)
 from src.data.ingest import Flight, Scenario, load_scenario
 from src.data.weather import WeatherGrid
 from src.data.wind import WindField, load_or_fetch_wind
@@ -30,6 +38,7 @@ def build_snapshot(
     *,
     use_wind: bool = False,
     use_storms: bool = True,
+    use_optimizer: bool = True,
 ) -> dict:
     scenario_dir = Path(scenario_dir)
     scenario = load_scenario(scenario_dir)
@@ -42,12 +51,20 @@ def build_snapshot(
     wind = _load_wind(scenario, out_dir) if use_wind else None
 
     estimates = [estimate_fuel(flight, wind=wind, weather=weather) for flight in scenario.flights]
-    records = [
-        _flight_record(flight, estimate)
-        for flight, estimate in zip(scenario.flights, estimates)
-    ]
     h3_cells = aggregate_h3(scenario.flights, estimates)
-    sectors_data = _sectors(scenario, scenario_dir)
+
+    # Sectors + optimizer share one baseline occupancy computation.
+    bands, baseline_counts, sectors_data = _occupancy(scenario, scenario_dir)
+    opt = (
+        optimize(scenario, estimates, wind=wind, weather=weather, bands=bands, baseline_counts=baseline_counts)
+        if use_optimizer
+        else None
+    )
+
+    records = [
+        _flight_record(flight, estimates[i], opt, i)
+        for i, flight in enumerate(scenario.flights)
+    ]
     summary = _summary(
         scenario_dir.name,
         scenario.asked_at.isoformat(),
@@ -56,20 +73,26 @@ def build_snapshot(
         storms_enabled=weather is not None,
         n_h3_cells=len(h3_cells),
         n_overloaded_sectors=sectors_data.get("n_overloaded", 0),
+        optimization=opt.summary if opt else None,
     )
 
     (out_dir / "flights.json").write_text(json.dumps(records))
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     (out_dir / "h3.json").write_text(json.dumps(h3_cells))
     (out_dir / "sectors.json").write_text(json.dumps(sectors_data))
+    (out_dir / "recommendations.json").write_text(json.dumps(opt.changes if opt else []))
     return summary
 
 
-def _sectors(scenario: Scenario, scenario_dir: Path) -> dict:
+def _occupancy(scenario: Scenario, scenario_dir: Path):
     sectors_path = scenario_dir.parent / "sectors.geojson"
     if not sectors_path.exists():
-        return {"sectors": {}, "n_overloaded": 0}
-    return aggregate_sectors(scenario, sectors_path)
+        return None, None, {"sectors": {}, "n_overloaded": 0}
+    bands = load_bands(sectors_path)
+    n_bins = n_bins_for(scenario, DEFAULT_BIN_MINUTES)
+    counts, _ = compute_occupancy(scenario.flights, bands, scenario.window_start, n_bins)
+    sectors_data = format_sectors(counts, bands, scenario.window_start, n_bins, DEFAULT_BIN_MINUTES)
+    return bands, counts, sectors_data
 
 
 def _load_wind(scenario: Scenario, out_dir: Path) -> WindField | None:
@@ -80,8 +103,8 @@ def _load_wind(scenario: Scenario, out_dir: Path) -> WindField | None:
     )
 
 
-def _flight_record(flight: Flight, estimate: FuelEstimate) -> dict:
-    return {
+def _flight_record(flight: Flight, estimate: FuelEstimate, opt: OptimizeResult | None, i: int) -> dict:
+    record = {
         "id": flight.id,
         "flight_number": flight.flight_number,
         "origin": flight.origin_airport_icao,
@@ -104,6 +127,19 @@ def _flight_record(flight: Flight, estimate: FuelEstimate) -> dict:
         "max_refc_dbz": round(estimate.max_refc_dbz, 1),
         "storm_penalty_kg": round(estimate.storm_penalty_kg, 1),
     }
+    opt_est = opt.estimates[i] if opt else estimate
+    opt_alt = opt.altitudes[i] if opt else flight.cruise_altitude_ft
+    shift_min = int((opt.takeoffs[i] - flight.take_off_time).total_seconds() / 60) if opt else 0
+    record.update(
+        {
+            "opt_fuel_kg": round(opt_est.fuel_kg, 1),
+            "opt_cruise_altitude_ft": opt_alt,
+            "opt_departure_shift_min": shift_min,
+            "fuel_saved_kg": round(estimate.fuel_kg - opt_est.fuel_kg, 1),
+            "recommended": opt_alt != flight.cruise_altitude_ft or shift_min != 0,
+        }
+    )
+    return record
 
 
 def _summary(
@@ -115,6 +151,7 @@ def _summary(
     storms_enabled: bool,
     n_h3_cells: int = 0,
     n_overloaded_sectors: int = 0,
+    optimization: dict | None = None,
 ) -> dict:
     by_class: dict[str, int] = {}
     for estimate in estimates:
@@ -137,6 +174,7 @@ def _summary(
         "total_storm_penalty_kg": round(sum(e.storm_penalty_kg for e in estimates), 1),
         "n_h3_cells": n_h3_cells,
         "n_overloaded_sectors": n_overloaded_sectors,
+        "optimization": optimization,
         "by_class": by_class,
     }
 
@@ -147,10 +185,15 @@ def main() -> None:
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--wind", action="store_true", help="fetch Open-Meteo winds (network)")
     parser.add_argument("--no-storms", dest="storms", action="store_false", help="skip storm sampling")
+    parser.add_argument("--no-optimize", dest="optimize", action="store_false", help="skip the optimizer")
     args = parser.parse_args()
     use_wind = args.wind or os.environ.get("AIRFLOW_WIND") == "1"
     summary = build_snapshot(
-        args.scenario_dir, out_root=args.out_root, use_wind=use_wind, use_storms=args.storms
+        args.scenario_dir,
+        out_root=args.out_root,
+        use_wind=use_wind,
+        use_storms=args.storms,
+        use_optimizer=args.optimize,
     )
     print(json.dumps(summary, indent=2))
 
