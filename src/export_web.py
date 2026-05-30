@@ -40,6 +40,10 @@ def _web_flight(
     price: float,
 ) -> dict[str, Any]:
     path = [[_round(lon), _round(lat)] for lon, lat in zip(record["lons"], record["lats"])]
+    opt_path = [
+        [_round(lon), _round(lat)]
+        for lon, lat in zip(record.get("opt_lons", record["lons"]), record.get("opt_lats", record["lats"]))
+    ]
     fuel_saved = record.get("fuel_saved_kg", 0.0)
     opt_fuel = record.get("opt_fuel_kg", record["fuel_kg"])
     return {
@@ -52,6 +56,7 @@ def _web_flight(
         "is_airborne": record["is_airborne"],
         "distance_nm": record["distance_nm"],
         "path": path,
+        "opt_path": opt_path,
         # baseline
         "cruise_altitude_ft": record["cruise_altitude_ft"],
         "fuel_kg": record["fuel_kg"],

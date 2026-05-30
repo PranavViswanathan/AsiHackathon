@@ -36,7 +36,8 @@ export default function DetailPanel({ flight, fuelDomain, scenario }: Props) {
     flight.opt_cruise_altitude_ft != null &&
     flight.opt_cruise_altitude_ft !== flight.cruise_altitude_ft;
   const depShift = flight.opt_departure_shift_min ?? 0;
-  const showRec = Boolean(flight.recommended) && (altChanged || depShift !== 0);
+  const showRec =
+    Boolean(flight.recommended) && (altChanged || depShift !== 0 || Boolean(flight.recommendation));
 
   return (
     <div className="flex flex-col gap-3 p-4 bg-gray-900 border border-gray-700 rounded-lg text-white min-w-[220px]">
@@ -64,7 +65,7 @@ export default function DetailPanel({ flight, fuelDomain, scenario }: Props) {
         </div>
         <div>
           <p className="text-xs text-gray-400">Distance</p>
-          <p className="font-mono">{formatNumber(flight.distance_nm, 1)} nm</p>
+          <p className="font-mono">{formatNumber(flight.distance_nm, 1)} NM</p>
         </div>
         <div>
           <p className="text-xs text-gray-400">Fuel</p>

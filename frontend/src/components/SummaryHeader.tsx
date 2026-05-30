@@ -67,7 +67,7 @@ export default function SummaryHeader({ summary, scenario }: Props) {
       <Stat label="Flights" value={formatLarge(summary.n_flights)} />
       <Stat label="Fuel" value={formatLarge(summary.total_fuel_kg)} unit="kg" />
       <Stat label="CO2" value={formatLarge(summary.total_co2_kg)} unit="kg" />
-      <Stat label="Distance" value={formatLarge(summary.total_distance_nm)} unit="nm" />
+      <Stat label="Distance" value={formatLarge(summary.total_distance_nm)} unit="NM" />
       {summary.optimization?.cost_saved_usd != null && (
         <div className="flex flex-col">
           <span className="text-xs text-emerald-400/80 uppercase tracking-wider">Saved</span>

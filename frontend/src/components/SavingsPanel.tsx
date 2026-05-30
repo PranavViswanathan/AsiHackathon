@@ -48,10 +48,18 @@ export default function SavingsPanel({ optimization }: Props) {
     n_departure_changes,
   } = optimization;
 
+  const baseM = baseline_fuel_kg / 1_000_000;
+  const optM = optimized_fuel_kg / 1_000_000;
   const data = [
-    { name: "Baseline", fuel: baseline_fuel_kg / 1_000_000, color: BASELINE_COLOR },
-    { name: "Optimized", fuel: optimized_fuel_kg / 1_000_000, color: OPTIMIZED_COLOR },
+    { name: "Baseline", fuel: baseM, color: BASELINE_COLOR },
+    { name: "Optimized", fuel: optM, color: OPTIMIZED_COLOR },
   ];
+
+  // The saving is a few percent, so a 0-based axis hides it. Zoom the axis to
+  // the relevant band (labels stay truthful) so the gap is actually visible.
+  const gap = Math.max(baseM - optM, baseM * 0.0001);
+  const yMin = Math.max(0, optM - gap * 1.2);
+  const yMax = baseM + gap * 0.4;
 
   return (
     <div className="flex flex-col gap-3 p-4 bg-gray-900 border border-gray-700 rounded-lg text-white min-w-[220px]">
@@ -71,7 +79,15 @@ export default function SavingsPanel({ optimization }: Props) {
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
             <XAxis dataKey="name" tick={{ fill: "#9ca3af", fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fill: "#9ca3af", fontSize: 10 }} axisLine={false} tickLine={false} width={36} />
+            <YAxis
+              domain={[yMin, yMax]}
+              allowDataOverflow
+              tickFormatter={(v: number) => v.toFixed(1)}
+              tick={{ fill: "#9ca3af", fontSize: 10 }}
+              axisLine={false}
+              tickLine={false}
+              width={36}
+            />
             <Tooltip
               cursor={{ fill: "#ffffff10" }}
               contentStyle={{ background: "#111827", border: "1px solid #374151", borderRadius: 6, fontSize: 12 }}
@@ -86,6 +102,9 @@ export default function SavingsPanel({ optimization }: Props) {
           </BarChart>
         </ResponsiveContainer>
       </div>
+      <p className="text-[10px] text-gray-500 -mt-1 text-center">
+        Total fuel (M kg), axis zoomed to the {fuel_saved_pct.toFixed(1)}% gap
+      </p>
 
       <div className="grid grid-cols-2 gap-2 text-sm">
         <div>

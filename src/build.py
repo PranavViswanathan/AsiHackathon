@@ -133,13 +133,17 @@ def _flight_record(flight: Flight, estimate: FuelEstimate, opt: OptimizeResult |
     opt_est = opt.estimates[i] if opt else estimate
     opt_alt = opt.altitudes[i] if opt else flight.cruise_altitude_ft
     shift_min = int((opt.takeoffs[i] - flight.take_off_time).total_seconds() / 60) if opt else 0
+    opt_lats, opt_lons = opt.routes[i] if opt else (flight.lats, flight.lons)
+    rerouted = tuple(opt_lons) != tuple(flight.lons) or tuple(opt_lats) != tuple(flight.lats)
     record.update(
         {
             "opt_fuel_kg": round(opt_est.fuel_kg, 1),
             "opt_cruise_altitude_ft": opt_alt,
             "opt_departure_shift_min": shift_min,
+            "opt_lats": list(opt_lats),
+            "opt_lons": list(opt_lons),
             "fuel_saved_kg": round(estimate.fuel_kg - opt_est.fuel_kg, 1),
-            "recommended": opt_alt != flight.cruise_altitude_ft or shift_min != 0,
+            "recommended": opt_alt != flight.cruise_altitude_ft or shift_min != 0 or rerouted,
         }
     )
     return record

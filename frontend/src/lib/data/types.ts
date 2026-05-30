@@ -8,11 +8,12 @@ export type WebFlight = {
   is_airborne: boolean;
   distance_nm: number;
   path: [number, number][];
+  opt_path?: [number, number][]; // rerouted geometry (A* storm detour); == path if unchanged
   // baseline
   cruise_altitude_ft: number;
   fuel_kg: number;
   co2_kg: number;
-  // optimized scenario (optimizer changes only altitude + departure time)
+  // optimized scenario (altitude, departure time, and lateral reroute)
   opt_cruise_altitude_ft?: number;
   opt_departure_shift_min?: number;
   opt_fuel_kg?: number;

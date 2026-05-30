@@ -198,15 +198,18 @@ def export_flight_exposure(
         blocked = 0
         for f in web_flights:
             t = flight_times.get(f["flight_key"])
-            path = f.get("path") or []
-            if not t or len(path) < 2:
-                continue
             if scenario == "recommended":
+                # Optimized scenario can change the lateral route, altitude, and
+                # departure time — sample exposure along the optimized geometry.
+                path = f.get("opt_path") or f.get("path") or []
                 altitude = f.get("opt_cruise_altitude_ft") or f["cruise_altitude_ft"]
                 shift = (f.get("opt_departure_shift_min") or 0) * 60
             else:
+                path = f.get("path") or []
                 altitude = f["cruise_altitude_ft"]
                 shift = 0
+            if not t or len(path) < 2:
+                continue
             takeoff = datetime.fromisoformat(t[0]).timestamp() + shift
             landing = datetime.fromisoformat(t[1]).timestamp() + shift
             span = (landing - takeoff) or 1.0

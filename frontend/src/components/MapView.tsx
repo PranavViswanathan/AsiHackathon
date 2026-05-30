@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import type { WebFlight, SectorsGeoJSON, H3Cell, H3Mode, Scenario } from "@/lib/data/types";
 import { makeFuelScale } from "@/lib/fuelColor";
-import { displayFuel } from "@/lib/scenario";
+import { displayFuel, displayPath } from "@/lib/scenario";
 import {
   type FlightTimes,
   type FlightExposure,
@@ -340,7 +340,7 @@ export default function MapView({
         new PathLayer({
           id: "flights",
           data: pathData,
-          getPath: (d: WebFlight) => d.path,
+          getPath: (d: WebFlight) => displayPath(d, ctx.scenario),
           getColor: (d: WebFlight) => {
             const base = scale.toRgb(displayFuel(d, ctx.scenario));
             if (focusKey && d.flight_key === focusKey) return base;
@@ -355,6 +355,7 @@ export default function MapView({
           jointRounded: true,
           pickable: false,
           updateTriggers: {
+            getPath: [ctx.scenario],
             getColor: [ctx.fuelDomain[0], ctx.fuelDomain[1], focusKey, ctx.scenario],
             getWidth: [focusKey],
           },
@@ -375,8 +376,11 @@ export default function MapView({
         const planes: Plane[] = [];
         for (const f of ctx.flights) {
           const times = ctx.flightTimes.get(f.flight_key);
-          if (!times || f.path.length < 2) continue;
-          // The optimizer only shifts departure; same route, so slide the window.
+          // Optimized routes have their own geometry, so animate along the path
+          // for the active scenario.
+          const path = displayPath(f, ctx.scenario);
+          if (!times || path.length < 2) continue;
+          // The optimizer can shift departure; slide the take-off/landing window.
           const shiftMs =
             ctx.scenario === "recommended"
               ? (f.opt_departure_shift_min ?? 0) * 60_000
@@ -386,12 +390,14 @@ export default function MapView({
           const frac = (ctx.clockMs - takeoff) / (landing - takeoff);
           if (frac < 0 || frac > 1) continue;
 
-          let metrics = metricsCache.get(f.flight_key);
+          // Cache cumulative lengths per (flight, scenario) since the geometry differs.
+          const metricsKey = `${f.flight_key}:${ctx.scenario}`;
+          let metrics = metricsCache.get(metricsKey);
           if (!metrics) {
-            metrics = buildPathMetrics(f.path);
-            metricsCache.set(f.flight_key, metrics);
+            metrics = buildPathMetrics(path);
+            metricsCache.set(metricsKey, metrics);
           }
-          const { position, bearing } = positionAt(f.path, metrics, frac);
+          const { position, bearing } = positionAt(path, metrics, frac);
           // Is this flight flying through dangerous weather at the current frame?
           const blocked =
             ctx.flightExposure?.get(f.flight_key)?.[ctx.weatherFrameIndex] === "1";
@@ -497,8 +503,11 @@ export default function MapView({
       const selectedFlight = selectedKey
         ? ctx.flights.find((f) => f.flight_key === selectedKey)
         : undefined;
-      if (selectedFlight && selectedFlight.path.length > 0) {
-        const path = selectedFlight.path;
+      const selectedPath = selectedFlight
+        ? displayPath(selectedFlight, ctx.scenario)
+        : [];
+      if (selectedFlight && selectedPath.length > 0) {
+        const path = selectedPath;
         const labels = [
           { position: path[0], text: selectedFlight.origin },
           { position: path[path.length - 1], text: selectedFlight.destination },
@@ -555,13 +564,14 @@ export default function MapView({
     const Viewport = viewportCtorRef.current;
     const FlyTo = flyToCtorRef.current;
     const container = containerRef.current;
-    if (!deck || !Viewport || !FlyTo || !container || flight.path.length === 0) return;
+    const path = displayPath(flight, ctxRef.current.scenario);
+    if (!deck || !Viewport || !FlyTo || !container || path.length === 0) return;
 
     let minLon = Infinity;
     let minLat = Infinity;
     let maxLon = -Infinity;
     let maxLat = -Infinity;
-    for (const [lon, lat] of flight.path) {
+    for (const [lon, lat] of path) {
       if (lon < minLon) minLon = lon;
       if (lon > maxLon) maxLon = lon;
       if (lat < minLat) minLat = lat;

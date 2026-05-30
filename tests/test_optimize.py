@@ -4,6 +4,7 @@ repair, on small synthetic scenarios. Offline."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import numpy as np
@@ -13,6 +14,7 @@ from src.algorithm.optimize import optimize
 from src.algorithm.sectors import capacity_map, compute_occupancy, load_bands, n_bins_for
 from src.data.ingest import Flight, Scenario
 from src.data.weather import WeatherGrid
+from src.data.wind import WindField
 
 T = lambda h, m: datetime(2025, 5, 29, h, m, tzinfo=timezone.utc)  # noqa: E731
 
@@ -86,6 +88,79 @@ def test_altitude_pass_climbs_to_clear_a_storm(tmp_path):
     assert result.summary["fuel_saved_kg"] > 0
     assert result.summary["n_altitude_changes"] == 1
     assert result.changes[0]["altitude"]["to"] == result.altitudes[0]
+    assert result.summary["storm_flights_before"] == 1
+    assert result.summary["storm_flights_after"] == 0
+    assert result.summary["unresolved_storm_flights"] == 0
+
+
+def _storm_grid_retop(tmp_path, retop_ft, refc=55.0):
+    """Storm cell at the NW corner with a configurable echo-top."""
+    refc_dir = tmp_path / "wx" / "refc"
+    retop_dir = tmp_path / "wx" / "retop"
+    refc_dir.mkdir(parents=True)
+    retop_dir.mkdir(parents=True)
+    name = "2025-05-29_21:00:00_2025-05-29_21:00:00_2025-05-29_22:00:00.npz"
+    r = np.full((256, 358), -60.0)
+    t = np.full((256, 358), -1.0)
+    r[0, 0] = refc
+    t[0, 0] = retop_ft
+    np.savez(refc_dir / name, matrix=r)
+    np.savez(retop_dir / name, matrix=t)
+    return WeatherGrid(tmp_path)
+
+
+def _two_level_wind():
+    """250 hPa (~34k ft) tailwind, 200 hPa (~39k ft) headwind for an eastbound leg."""
+    lats = np.array([50.0, 56.0])
+    lons = np.array([-136.0, -134.0])
+    shape = (1, 2, 2)
+    return WindField(
+        lats=lats,
+        lons=lons,
+        times=[T(21, 0)],
+        u={200: np.full(shape, -120.0), 250: np.full(shape, 120.0)},
+        v={200: np.zeros(shape), 250: np.zeros(shape)},
+    )
+
+
+def test_hard_storm_constraint_overrides_fuel(tmp_path):
+    # Storm top at 36k ft: only a climb to 37k (200 hPa, headwind) clears it; the
+    # cheaper storm-penetrating altitudes sit at 250 hPa in a tailwind.
+    grid = _storm_grid_retop(tmp_path, retop_ft=36000)
+    wind = _two_level_wind()
+    flight = _flight("WINDY", 33000, [55.77, 55.77], [-135.0, -134.9])
+    scenario = _scenario([flight])
+    baseline = [estimate_fuel(flight, wind=wind, weather=grid)]
+    assert baseline[0].storm_nm > 0
+
+    # A storm-penetrating altitude is genuinely cheaper than the storm-free one.
+    penetrating = estimate_fuel(replace(flight, cruise_altitude_ft=35000), wind=wind, weather=grid)
+    assert penetrating.storm_nm > 0
+
+    result = optimize(scenario, baseline, wind=wind, weather=grid)
+
+    assert result.estimates[0].storm_nm == 0            # hard constraint satisfied
+    assert result.altitudes[0] == 37000                 # diverted above the echo-top
+    assert result.estimates[0].fuel_kg > penetrating.fuel_kg  # chose the pricier, storm-free option
+    assert result.summary["fuel_saved_kg"] < 0          # safety cost fuel, as expected
+    assert result.summary["storm_flights_before"] == 1
+    assert result.summary["storm_flights_after"] == 0
+    assert "hard constraint" in result.changes[0]["reason"]
+
+
+def test_unresolvable_storm_is_flagged(tmp_path):
+    # Echo-top at 50k ft is above every cruise candidate -> cannot be cleared.
+    grid = _storm_grid_retop(tmp_path, retop_ft=50000)
+    flight = _flight("STUCK", 31000, [55.77, 55.77], [-135.0, -134.9])
+    scenario = _scenario([flight])
+    baseline = [estimate_fuel(flight, weather=grid)]
+    assert baseline[0].storm_nm > 0
+
+    result = optimize(scenario, baseline, weather=grid)
+
+    assert result.estimates[0].storm_nm > 0             # still exposed
+    assert result.summary["storm_flights_after"] == 1
+    assert result.summary["unresolved_storm_flights"] == 1
 
 
 def test_departure_repair_relieves_an_overloaded_sector(tmp_path):
