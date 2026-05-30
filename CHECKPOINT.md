@@ -380,3 +380,43 @@ make build                                          # pipeline artifacts
 make install-web                                    # npm install
 make frontend                                       # next dev on :3000
 ```
+
+---
+
+## Phase 5.1 — OpenAP fuel model (class → engine, altitude-aware)
+
+**Goal:** replace the flat per-class fuel-flow constants with a real
+engine/airframe model so fuel flow depends on altitude — which turns "climb to a
+better level" into a genuine fuel lever for the optimizer (previously altitude
+only mattered via wind/storm).
+
+**Done:**
+- `src/algorithm/fuel.py` — fuel flow now from **OpenAP** for a representative
+  type inferred per class (`regional→E190`, `narrowbody→A320`, `widebody→B789`)
+  at the flight's cruise altitude/speed (`cruise_fuel_flow_kg_hr`, memoised).
+  Falls back to per-class constants if OpenAP is missing or out of envelope.
+  `FuelEstimate` gains `aircraft_type` + `fuel_flow_kg_hr`.
+- `src/build.py` — flight records gain `aircraft_type`, `fuel_flow_kg_hr`,
+  `fuel_capacity_kg` (representative tank size, context for "fuel on board").
+- `requirements.txt` — added `openap`. `docs/API.md` updated; tests updated
+  (`test_fuel.py`: altitude-aware assertions + a fuel-flow-vs-altitude test).
+
+**Why it matters:** OpenAP cruise fuel flow drops ~8–10% from 31k→39k ft, so the
+optimizer's altitude pass now saves real fuel. The bundle has no tail number, so
+the type/engine is an estimate (labelled as such).
+
+**Verified:**
+- `make test` → **66 passed** (~63s).
+- Offline build: total fuel **72.4M kg** (was 63.2M with the old constants — the
+  regional rate ~doubled to a realistic ~2,000 kg/h); avg **4,341 kg/flight ≈
+  24.3% of tank capacity**. Optimizer fuel saved jumped **1,822 → 73,538 kg**
+  (storm-flight altitude pass now has a fuel gradient).
+- `--wind` build (altitude pass over all flights): **fuel saved 2,437,212 kg
+  (3.35%)**, 13,264 altitude changes + 4,758 departure shifts — the real
+  wind+altitude optimization story.
+
+**Limitations:** representative cruise mass per class (no mass in the bundle, no
+mass-decrease over the flight); offline the altitude pass is still gated to
+storm-exposed flights (a monotonic "climb everyone" recommendation isn't credible
+without the wind-driven optimum), so the headline fuel savings need `make
+build-wind`.

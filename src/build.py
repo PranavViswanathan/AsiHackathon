@@ -15,7 +15,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from src.algorithm.fuel import FuelEstimate, estimate_fuel
+from src.algorithm.fuel import CLASS_FUEL_CAPACITY_KG, FuelEstimate, estimate_fuel
 from src.algorithm.h3agg import aggregate_h3
 from src.algorithm.optimize import OptimizeResult, optimize
 from src.algorithm.sectors import (
@@ -115,6 +115,9 @@ def _flight_record(flight: Flight, estimate: FuelEstimate, opt: OptimizeResult |
         "lats": list(flight.lats),
         "lons": list(flight.lons),
         "aircraft_class": estimate.aircraft_class,
+        "aircraft_type": estimate.aircraft_type,
+        "fuel_flow_kg_hr": estimate.fuel_flow_kg_hr,
+        "fuel_capacity_kg": CLASS_FUEL_CAPACITY_KG[estimate.aircraft_class],
         "distance_nm": round(estimate.distance_nm, 2),
         "time_hr": round(estimate.time_hr, 4),
         "fuel_kg": round(estimate.fuel_kg, 1),

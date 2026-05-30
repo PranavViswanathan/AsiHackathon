@@ -4,8 +4,8 @@ from pytest import approx
 
 from src.algorithm.fuel import (
     CO2_PER_KG_FUEL,
-    FUEL_FLOW_KG_HR,
     classify_aircraft,
+    cruise_fuel_flow_kg_hr,
     estimate_fuel,
 )
 from src.data.ingest import Flight
@@ -40,14 +40,23 @@ def test_fast_aircraft_is_a_widebody():
 
 def test_zero_wind_fuel_equals_fuel_flow_times_flight_hours():
     # one degree of latitude (~60 nm) flown at 60 kt takes exactly one hour,
-    # so fuel should equal the class fuel flow for that one hour.
+    # so fuel should equal the (altitude-aware) fuel flow for that one hour.
     flight = make_flight(
         lats=[0.0, 1.0], lons=[0.0, 0.0], cruise_speed_kt=60, cruise_altitude_ft=38000
     )
     estimate = estimate_fuel(flight)
+    expected = cruise_fuel_flow_kg_hr(estimate.aircraft_class, 38000, 60)
 
     assert estimate.time_hr == approx(1.0, rel=0.01)
-    assert estimate.fuel_kg == approx(FUEL_FLOW_KG_HR[estimate.aircraft_class], rel=0.01)
+    assert estimate.fuel_kg == approx(expected, rel=0.01)
+    assert estimate.fuel_flow_kg_hr == approx(expected, rel=0.01)
+
+
+def test_fuel_flow_decreases_with_altitude():
+    # The OpenAP lever: cruising higher burns less per hour (same class/speed).
+    low = cruise_fuel_flow_kg_hr("narrowbody", 31000, 450)
+    high = cruise_fuel_flow_kg_hr("narrowbody", 39000, 450)
+    assert high < low
 
 
 def test_co2_is_fuel_times_emission_factor():
