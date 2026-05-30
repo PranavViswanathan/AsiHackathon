@@ -7,12 +7,3 @@ const SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" view
 
 export const PLANE_ICON_URL = `data:image/svg+xml,${encodeURIComponent(SVG)}`;
 export const PLANE_ICON_SIZE = 64;
-
-// A ring used as a pulsing "in severe weather" halo behind blocked aircraft.
-// Tintable mask (alpha only on the stroke), recolored via the layer's getColor.
-const RING_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-<circle cx="32" cy="32" r="26" fill="none" stroke="#ffffff" stroke-width="6"/>
-</svg>`;
-
-export const RING_ICON_URL = `data:image/svg+xml,${encodeURIComponent(RING_SVG)}`;
-export const RING_ICON_SIZE = 64;

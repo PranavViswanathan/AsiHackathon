@@ -11,12 +11,7 @@ import {
   buildPathMetrics,
   positionAt,
 } from "@/lib/flightAnim";
-import {
-  PLANE_ICON_URL,
-  PLANE_ICON_SIZE,
-  RING_ICON_URL,
-  RING_ICON_SIZE,
-} from "@/lib/planeIcon";
+import { PLANE_ICON_URL, PLANE_ICON_SIZE } from "@/lib/planeIcon";
 
 type Props = {
   flights: WebFlight[];
@@ -402,34 +397,6 @@ export default function MapView({
           const blocked =
             ctx.flightExposure?.get(f.flight_key)?.[ctx.weatherFrameIndex] === "1";
           planes.push({ flight: f, position, bearing, blocked });
-        }
-
-        // Pulsing red halo behind any aircraft currently in severe weather.
-        const blockedPlanes = planes.filter((p) => p.blocked);
-        if (blockedPlanes.length > 0) {
-          const pulse = 0.5 + 0.5 * Math.sin(ctx.clockMs / 400);
-          layers.push(
-            new IconLayer({
-              id: "aircraft-warning",
-              data: blockedPlanes,
-              getIcon: () => ({
-                url: RING_ICON_URL,
-                width: RING_ICON_SIZE,
-                height: RING_ICON_SIZE,
-                mask: true,
-              }),
-              getPosition: (d: Plane) => d.position,
-              getSize: 30 + 10 * pulse,
-              getColor: [248, 113, 113, Math.round(140 + 90 * pulse)],
-              sizeUnits: "pixels",
-              pickable: false,
-              updateTriggers: {
-                getPosition: [ctx.clockMs, ctx.scenario],
-                getSize: [ctx.clockMs],
-                getColor: [ctx.clockMs],
-              },
-            })
-          );
         }
 
         layers.push(
