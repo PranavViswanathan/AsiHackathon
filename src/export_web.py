@@ -50,31 +50,50 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text())
 
 
-def _sectors(sectors_path: Path) -> dict[str, Any]:
+def _sectors(sectors_path: Path, occupancy_path: Path) -> dict[str, Any]:
     raw = _read_json(sectors_path)
-    features = [
-        {
-            "type": "Feature",
-            "geometry": feature["geometry"],
-            "properties": {
-                "name": feature["properties"]["name"],
-                "altitude_from_ft": feature["properties"]["altitude_from_ft"],
-                "altitude_to_ft": feature["properties"]["altitude_to_ft"],
-                "capacity": feature["properties"]["capacity"],
-                "load_by_bin": {},
-            },
-        }
-        for feature in raw["features"]
-    ]
+    occ = _read_json(occupancy_path).get("sectors", {}) if occupancy_path.exists() else {}
+    features = []
+    for feature in raw["features"]:
+        name = feature["properties"]["name"]
+        load = occ.get(name, {})
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": feature["geometry"],
+                "properties": {
+                    "name": name,
+                    "altitude_from_ft": feature["properties"]["altitude_from_ft"],
+                    "altitude_to_ft": feature["properties"]["altitude_to_ft"],
+                    "capacity": feature["properties"]["capacity"],
+                    "peak_load": load.get("peak_load", 0),
+                    "over_demand": load.get("over_demand", False),
+                    "load_by_bin": load.get("by_bin", {}),
+                },
+            }
+        )
     return {"type": "FeatureCollection", "features": features}
+
+
+def _h3_cell(cell: dict[str, Any], value_key: str) -> dict[str, Any]:
+    return {
+        "hex": cell["h3"],
+        "value": cell[value_key],
+        "fuel_kg": cell["fuel_kg"],
+        "n_flights": cell["n_flights"],
+        "mean_kg": cell["mean_kg"],
+        "congestion": cell["congestion"],
+    }
 
 
 def _write_h3(artifacts_dir: Path, out_dir: Path) -> None:
     cells = _read_json(artifacts_dir / "h3.json")
-    fuel = [{"hex": c["h3"], "value": c["fuel_kg"]} for c in cells]
-    traffic = [{"hex": c["h3"], "value": c["n_flights"]} for c in cells]
-    (out_dir / "h3_fuel.json").write_text(json.dumps(fuel))
-    (out_dir / "h3_traffic.json").write_text(json.dumps(traffic))
+    (out_dir / "h3_fuel.json").write_text(
+        json.dumps([_h3_cell(c, "fuel_kg") for c in cells])
+    )
+    (out_dir / "h3_traffic.json").write_text(
+        json.dumps([_h3_cell(c, "n_flights") for c in cells])
+    )
 
 
 def export_snapshot(
@@ -97,7 +116,9 @@ def export_snapshot(
     (out_dir / "flights_baseline.json").write_text(json.dumps(web_flights))
     (out_dir / "summary.json").write_text(json.dumps({**summary, "scenario": "baseline"}))
     _write_h3(artifacts_dir, out_dir)
-    (out_dir / "sectors.json").write_text(json.dumps(_sectors(Path(sectors_path))))
+    (out_dir / "sectors.json").write_text(
+        json.dumps(_sectors(Path(sectors_path), artifacts_dir / "sectors.json"))
+    )
 
     manifest = {
         "snapshots": [snapshot],

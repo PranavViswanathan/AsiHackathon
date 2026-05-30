@@ -372,6 +372,17 @@ the live API later by changing one env var. deck.gl + MapLibre (2D) and Three.js
   destination; `page.tsx` filters flights (memoized) before both 2D and 3D views.
 - 3D altitude: `Scene3D` lifts each path to `cruise_altitude_ft / 10000` (was a
   flat `y=0`) and adds a ground grid for reference.
+- Color scale is now **data-driven** (`makeFuelScale`): domain = [min, p95] of the
+  loaded flights, computed in `page.tsx`, so blue is visible across the bulk and
+  the top 5% clamp to red (the fixed 57 kg floor / 0.25 turbo-floor that hid blue
+  is gone). Legend shows the real turbo gradient + actual domain labels.
+- H3 stats wired through (`export_web._h3_cell`, `_sectors` merges the occupancy
+  artifact): cells carry `fuel_kg`/`n_flights`/`mean_kg`/`congestion`; sectors
+  carry `peak_load`/`over_demand`/`load_by_bin`.
+- Added: H3 legend, an H3 fuel/traffic mode toggle (`getH3(mode)`), sectors filled
+  + colored by over-demand, and deck `getTooltip` popups for sectors (peak load vs
+  capacity, over-demand, altitude band) and H3 cells (fuel, flights, mean,
+  congestion).
 
 **Limitations / deferred:**
 - Only the baseline scenario exists; the `recommended` toggle goes live once the

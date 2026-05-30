@@ -1,10 +1,11 @@
 "use client";
 
 import type { WebFlight } from "@/lib/data/types";
-import { fuelToHex } from "@/lib/fuelColor";
+import { makeFuelScale } from "@/lib/fuelColor";
 
 type Props = {
   flight: WebFlight | null;
+  fuelDomain: [number, number];
 };
 
 function formatNumber(n: number, decimals = 0): string {
@@ -14,7 +15,7 @@ function formatNumber(n: number, decimals = 0): string {
   });
 }
 
-export default function DetailPanel({ flight }: Props) {
+export default function DetailPanel({ flight, fuelDomain }: Props) {
   if (!flight) {
     return (
       <div className="flex flex-col gap-2 p-4 bg-gray-900 border border-gray-700 rounded-lg text-white min-w-[220px]">
@@ -24,7 +25,7 @@ export default function DetailPanel({ flight }: Props) {
     );
   }
 
-  const fuelColor = fuelToHex(flight.fuel_kg);
+  const fuelColor = makeFuelScale(fuelDomain[0], fuelDomain[1]).toHex(flight.fuel_kg);
 
   return (
     <div className="flex flex-col gap-3 p-4 bg-gray-900 border border-gray-700 rounded-lg text-white min-w-[220px]">

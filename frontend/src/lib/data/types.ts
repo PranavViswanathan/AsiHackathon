@@ -17,6 +17,8 @@ export type SectorProperties = {
   altitude_from_ft: number;
   altitude_to_ft: number;
   capacity: number;
+  peak_load: number;
+  over_demand: boolean;
   load_by_bin: Record<string, number>;
 };
 
@@ -35,6 +37,10 @@ export type SectorsGeoJSON = {
 export type H3Cell = {
   hex: string;
   value: number;
+  fuel_kg: number;
+  n_flights: number;
+  mean_kg: number;
+  congestion: number;
 };
 
 export type ByClass = {

@@ -13,6 +13,7 @@ import type {
   H3Cell,
   Summary,
   Scenario,
+  H3Mode,
 } from "@/lib/data/types";
 
 const MapView = dynamic(() => import("@/components/MapView"), { ssr: false });
@@ -32,6 +33,7 @@ export default function Page() {
   const [viewMode, setViewMode] = useState<ViewMode>("2d");
   const [showSectors, setShowSectors] = useState(false);
   const [showH3, setShowH3] = useState(false);
+  const [h3Mode, setH3Mode] = useState<H3Mode>("fuel");
   const [scenario, setScenario] = useState<Scenario>("baseline");
   const [recommendedAvailable, setRecommendedAvailable] = useState(false);
   const [snapshot, setSnapshot] = useState(DEFAULT_SNAPSHOT);
@@ -49,6 +51,16 @@ export default function Page() {
       return true;
     });
   }, [flights, filters]);
+
+  // Color domain from the full snapshot: lowest fuel to the 95th percentile, so
+  // the spectrum spreads across the bulk of flights (top 5% clamp to red).
+  const fuelDomain = useMemo<[number, number]>(() => {
+    if (flights.length === 0) return [0, 1];
+    const sorted = flights.map((f) => f.fuel_kg).sort((a, b) => a - b);
+    const min = sorted[0];
+    const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+    return [min, p95 > min ? p95 : min + 1];
+  }, [flights]);
 
   useEffect(() => {
     const ds = getDataSource();
@@ -69,7 +81,7 @@ export default function Page() {
     Promise.all([
       ds.getFlights(snapshot, scenario),
       ds.getSectors(snapshot),
-      ds.getH3(snapshot, "fuel", scenario),
+      ds.getH3(snapshot, h3Mode, scenario),
       ds.getSummary(snapshot, scenario),
     ])
       .then(([f, s, h, sum]) => {
@@ -84,7 +96,7 @@ export default function Page() {
         setError(msg);
         setLoading(false);
       });
-  }, [snapshot, scenario]);
+  }, [snapshot, scenario, h3Mode]);
 
   useEffect(() => {
     if (scenario === "baseline") {
@@ -123,9 +135,12 @@ export default function Page() {
             onShowSectorsChange={setShowSectors}
             showH3={showH3}
             onShowH3Change={setShowH3}
+            h3Mode={h3Mode}
+            onH3ModeChange={setH3Mode}
             scenario={scenario}
             onScenarioChange={handleScenarioChange}
             recommendedAvailable={recommendedAvailable}
+            fuelDomain={fuelDomain}
           />
           <FilterPanel
             flights={flights}
@@ -148,15 +163,17 @@ export default function Page() {
               h3Cells={h3Cells}
               showSectors={showSectors}
               showH3={showH3}
+              h3Mode={h3Mode}
+              fuelDomain={fuelDomain}
               onSelectFlight={handleSelectFlight}
             />
           ) : (
-            <Scene3D flights={filteredFlights} />
+            <Scene3D flights={filteredFlights} fuelDomain={fuelDomain} />
           )}
         </main>
 
         <aside className="flex flex-col gap-3 p-3 w-[240px] shrink-0 overflow-y-auto">
-          <DetailPanel flight={selectedFlight} />
+          <DetailPanel flight={selectedFlight} fuelDomain={fuelDomain} />
         </aside>
       </div>
     </div>
