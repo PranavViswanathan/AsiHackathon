@@ -88,3 +88,63 @@ make build             # writes data/artifacts/<snapshot>/
 ```
 
 **Next:** Phase 2 — FastAPI backend serving these artifacts.
+
+---
+
+## Phase 2 — FastAPI backend serving artifacts
+
+**Goal:** stand up `backend/` over the Phase 1 artifacts so the frontend (and
+demo) can read flights, summary, H3, sectors, and weather over HTTP. Independent
+of the in-progress pipeline work (wind/sectors/H3/optimizer) — it consumes the
+existing artifact schema and reads sectors/weather straight from the bundle.
+
+**Done:**
+- `backend/config.py` — `Settings` from `SCENARIO_DIR` / `ARTIFACT_ROOT` /
+  `FRONTEND_URL` env (defaults match the Makefile and `.env.example`).
+- `backend/store.py` — `ArtifactStore`: serves `flights.json`/`summary.json`/
+  `h3.json`, builds them on first access via `src.build.build_snapshot`, caches
+  in memory; `flight(id)` lookup.
+- `backend/bundle.py` — `BundleReader`: parses `sectors.geojson`, indexes the
+  `wx/refc|retop/*.npz` strips by `[valid_from, valid_to)`, selects the strip
+  covering an instant, loads + downsamples grids (nodata → `null`). Grid math per
+  `docs/DATA.md`.
+- `backend/routers/{routing,sectors,weather}.py` — reused the empty stubs:
+  `GET /api/flights`, `GET /api/flight/{id}`, `GET /api/h3`, `GET /api/summary`,
+  `POST /api/solve`; `GET /api/sectors`, `GET /api/sector_load?t=`;
+  `GET /api/weather?t=&step=`.
+- `backend/main.py` — FastAPI app, CORS to `FRONTEND_URL`, `/health`, `/` banner.
+- Rewrote `docs/API.md` to match the artifact-serving backend (was the old
+  live-solver contract).
+- Config: added `httpx` to `requirements.txt` (TestClient dep); gitignored the
+  root `hackathon_data_bundle/` and the `data/hackathon_data_bundle` symlink.
+- Tests (12, all passing): `tests/test_backend.py` — hermetic 2-flight fixture
+  scenario (synthetic routes + 2 weather strips + 2 sectors), `TestClient`.
+
+**Verified:**
+- `make test` → **33 passed** (21 Phase 1 + 12 Phase 2).
+- Live smoke test (`uvicorn backend.main:app`, scenario
+  `asked_at_2025-05-29T21:00:00Z`): `/api/summary` builds 16,687 flights
+  (63.2M kg fuel, 199.7M kg CO₂; 13,248 narrowbody / 3,189 regional / 250
+  widebody — matches Phase 1); `/api/flights` → 16,687; `/api/sectors` → 712;
+  `/api/weather?t=…&step=64` selects the covering strip and returns a (4, 6) grid.
+
+**Limitations / deferred:**
+- Sector `load`/`over_demand` are `0`/`false` until the Phase 4 occupancy pass;
+  `/api/h3` is `[]` until Phase 4 aggregation.
+- `POST /api/solve` (re)runs the pipeline and returns the summary; optimizer
+  knobs (`lambda_*`, `iterations`) are accepted but reserved for Phase 5.
+
+**Local setup note:** the data bundle on this machine sits at the repo root
+(`hackathon_data_bundle/`); tests and the Makefile expect
+`data/hackathon_data_bundle/`. Bridged with a gitignored symlink:
+`ln -s ../hackathon_data_bundle data/hackathon_data_bundle`.
+
+**Run it:**
+```
+make install-py        # now also installs httpx
+make backend           # uvicorn on :8000  (set SCENARIO via env/Makefile)
+# GET http://localhost:8000/docs  for the live OpenAPI UI
+```
+
+**Next:** Phase 3 — Open-Meteo wind + storm penalties in the pipeline; the
+backend endpoints already carry the richer per-flight fields once `src/` emits them.

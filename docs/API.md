@@ -1,65 +1,95 @@
 # API Reference
 
-The backend is a FastAPI application (`backend/main.py`) that loads a scenario,
-runs the solver on demand, and serves trajectories, sector loads, and weather to
-the frontend. Routes are grouped into routers under `backend/routers/`. CORS is
-opened to `FRONTEND_URL`. All payloads are JSON.
+The backend is a FastAPI application (`backend/main.py`) that serves the
+precomputed per-snapshot artifacts written by `src.build` (`flights.json`,
+`summary.json`, `h3.json`) and reads sectors + weather straight from the data
+bundle. The active scenario is selected by the `SCENARIO_DIR` environment
+variable (`backend/config.py`); artifacts are built on first access if missing.
 
-Base path: `/api` (except `/health`).
+Routes are grouped into routers under `backend/routers/`. CORS is opened to
+`FRONTEND_URL`. All payloads are JSON. Base path: `/api` (except `/health` and
+`/`).
+
+> **Status:** flight fuel estimates, the scenario summary, sectors, and weather
+> are live. Sector `load`/`over_demand` are `0`/`false` until the Phase 4
+> occupancy pass lands, and `h3` is `[]` until the Phase 4 aggregation lands.
+> `POST /api/solve` currently (re)runs the pipeline; the optimizer knobs are
+> reserved for Phase 5.
+
+## GET /api/flights
+
+All flights in the active scenario with their baseline fuel estimate.
+
+```json
+[
+  {
+    "id": "TEST1_2025-05-29T21:10:00+00:00_KJFK",
+    "flight_number": "TEST1",
+    "origin": "KJFK",
+    "destination": "KLAX",
+    "cruise_altitude_ft": 37000.0,
+    "cruise_speed_kt": 460.0,
+    "is_airborne": false,
+    "lats": [40.64, 39.0, 34.0],
+    "lons": [-73.78, -90.0, -118.4],
+    "aircraft_class": "narrowbody",
+    "distance_nm": 2143.5,
+    "time_hr": 4.66,
+    "fuel_kg": 11650.0,
+    "co2_kg": 36814.0
+  }
+]
+```
+
+`id` = `"{flight_number}_{take_off_time}_{origin_airport_icao}"`.
+
+## GET /api/flight/{id}
+
+One flight's full record (same shape as a `/api/flights` element). The path is
+matched greedily, so the `id` (which contains `:` and `+`) can be passed
+verbatim. `404` if no flight matches.
+
+## GET /api/h3
+
+The H3 energy heatmap cells: `[{ "h3", "fuel_kg", "n_flights", "mean_kg",
+"congestion" }]`. Empty `[]` until the Phase 4 aggregation lands.
+
+## GET /api/summary
+
+Scenario totals (builds artifacts on first call).
+
+```json
+{
+  "snapshot": "asked_at_2025-05-29T21:00:00Z",
+  "asked_at": "2025-05-29T21:00:00+00:00",
+  "n_flights": 16687,
+  "total_fuel_kg": 63193079.2,
+  "total_co2_kg": 199690130.1,
+  "total_distance_nm": 11478388.6,
+  "by_class": { "narrowbody": 13248, "regional": 3189, "widebody": 250 }
+}
+```
 
 ## POST /api/solve
 
-Run the routing optimizer over a scenario and return the result.
+(Re)build the active scenario's artifacts and return the summary.
 
-Request body:
-
-```json
-{
-  "scenario_dir": "./data/hackathon_data_bundle/asked_at_2025-05-29T21:00:00Z",
-  "n_flights": 16687,
-  "lambda_sector": 1.0,
-  "lambda_weather": 1000.0,
-  "iterations": 10
-}
-```
+Request body (all fields optional):
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `scenario_dir` | string | Path to the scenario directory to load |
-| `n_flights` | number | Cap on flights to route (subset for speed; full set otherwise) |
-| `lambda_sector` | number | Weight on the sector-congestion cost term |
-| `lambda_weather` | number | Weight on the weather-penalty cost term |
-| `iterations` | number | Number of iterative-Dijkstra passes |
+| `force_rebuild` | boolean | Rebuild even if artifacts already exist |
+| `scenario_dir` | string | Reserved: per-request scenario override |
+| `lambda_sector` | number | Reserved for the Phase 5 optimizer |
+| `lambda_weather` | number | Reserved for the Phase 5 optimizer |
+| `iterations` | number | Reserved for the Phase 5 optimizer |
+| `n_flights` | number | Reserved for the Phase 5 optimizer |
 
-Response:
-
-```json
-{
-  "trajectories": [
-    { "flight_number": "...", "cells": [[lat, lon, alt, t], ...] }
-  ],
-  "sector_loads": { "HIGH_006": { "0": 12, "1": 18, ... } },
-  "history": [ { "iteration": 1, "over_demand": 134 }, ... ],
-  "stats": {
-    "flights_rerouted": 0,
-    "sectors_over_capacity": 0,
-    "weather_conflicts": 0,
-    "total_deviation": 0.0
-  }
-}
-```
-
-- `trajectories` — final optimized path per flight as a sequence of space-time
-  cells.
-- `sector_loads` — per-sector flight count keyed by time bin.
-- `history` — over-demand count per iteration, for the convergence chart.
-- `stats` — summary metrics for the results panel.
+Response: the same object as `GET /api/summary`.
 
 ## GET /api/sectors
 
-Return all sectors with their geometry and current load versus capacity.
-
-Response:
+All 712 sectors with geometry and capacity.
 
 ```json
 [
@@ -68,95 +98,64 @@ Response:
     "altitude_from_ft": 35000,
     "altitude_to_ft": 60000,
     "capacity": 20,
-    "load": 17,
+    "load": 0,
     "geometry": { "type": "Polygon", "coordinates": [ ... ] }
   }
 ]
 ```
 
-`load` reflects the most recent solve (peak across time bins, or 0 before any
-solve). The frontend uses this to color sectors green/yellow/red.
-
-## GET /api/weather
-
-Return the weather grids for a given time window.
-
-Query parameters:
-
-| Param | Type | Meaning |
-| --- | --- | --- |
-| `t` | ISO 8601 timestamp | The instant whose 15-minute strip to return |
-
-Example: `GET /api/weather?t=2025-05-29T21:00:00Z`
-
-Response:
-
-```json
-{
-  "valid_from": "2025-05-29T20:52:30Z",
-  "valid_to": "2025-05-29T21:07:30Z",
-  "extent": { "lat_max": 55.7765, "lat_min": 21.943, "lon_min": -135.0, "lon_max": -67.5 },
-  "shape": [256, 358],
-  "refc": [[...]],
-  "retop": [[...]]
-}
-```
-
-`refc` is composite reflectivity in dBZ; `retop` is storm top altitude in feet.
-The strip nearest `t` is selected.
-
-## GET /api/flights
-
-Return all flights in the currently loaded scenario.
-
-Response:
-
-```json
-[
-  {
-    "flight_number": "...",
-    "take_off_time": "2025-05-29T21:10:00Z",
-    "scheduled_landing_time": "2025-05-29T23:40:00Z",
-    "origin_airport_icao": "KJFK",
-    "destination_airport_icao": "KLAX",
-    "cruise_altitude_ft": 37000,
-    "cruise_speed_kt": 460,
-    "lats": [ ... ],
-    "lons": [ ... ],
-    "is_airborne": false
-  }
-]
-```
+`load` is the peak occupancy across time bins once the Phase 4 occupancy pass
+exists; `0` before then. The frontend colors sectors green/yellow/red from
+`load` vs `capacity`.
 
 ## GET /api/sector_load
 
-Return per-sector flight count versus capacity for a single time window.
-
-Query parameters:
+Per-sector occupancy versus capacity for one time-bin index.
 
 | Param | Type | Meaning |
 | --- | --- | --- |
-| `t` | number | Time-bin index whose loads to return |
-
-Example: `GET /api/sector_load?t=4`
-
-Response:
+| `t` | number | Time-bin index (default `0`) |
 
 ```json
 [
-  { "name": "HIGH_006", "capacity": 20, "load": 23, "over_demand": true },
-  { "name": "LOW_112", "capacity": 15, "load": 9,  "over_demand": false }
+  { "name": "HIGH_006", "capacity": 20, "load": 0, "over_demand": false }
 ]
 ```
 
-`over_demand` is `load > capacity`. Drives the per-timestep sector view.
+`over_demand` is `load > capacity`.
+
+## GET /api/weather
+
+The refc/retop grids for the 15-minute strip covering an instant.
+
+| Param | Type | Meaning |
+| --- | --- | --- |
+| `t` | ISO 8601 timestamp | The instant whose strip to return (required) |
+| `step` | number | Subsample stride for the grids (default `1`, max `64`) |
+
+Example: `GET /api/weather?t=2025-05-29T21:00:00Z&step=4`
+
+```json
+{
+  "valid_from": "2025-05-29T20:52:30+00:00",
+  "valid_to": "2025-05-29T21:07:30+00:00",
+  "extent": { "lat_max": 55.7765, "lat_min": 21.943, "lon_min": -135.0, "lon_max": -67.5 },
+  "shape": [64, 90],
+  "step": 4,
+  "refc": [[ ... ]],
+  "retop": [[ ... ]]
+}
+```
+
+`refc` is composite reflectivity in dBZ (dangerous `>= 40`); `retop` is storm-top
+altitude in feet. Nodata cells (refc `<= -50`, retop `< 0`) are returned as
+`null`. The strip whose `[valid_from, valid_to)` contains `t` is selected (or the
+nearest by midpoint). `400` on an unparseable `t`.
 
 ## GET /health
 
-Liveness probe.
+Liveness probe → `{ "status": "ok" }`.
 
-Response:
+## GET /
 
-```json
-{ "status": "ok" }
-```
+Service banner: name, active `scenario`, link to `/docs`, and the endpoint list.

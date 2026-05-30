@@ -11,3 +11,4 @@ pyproj
 h3
 requests
 pytest
+httpx
