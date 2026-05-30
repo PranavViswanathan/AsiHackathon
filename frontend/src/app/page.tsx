@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import SummaryHeader from "@/components/SummaryHeader";
 import ControlPanel from "@/components/ControlPanel";
 import DetailPanel from "@/components/DetailPanel";
+import SavingsPanel from "@/components/SavingsPanel";
 import FilterPanel, { DEFAULT_FILTERS, type Filters } from "@/components/FilterPanel";
 import { getDataSource } from "@/lib/data";
 import type {
@@ -182,15 +183,17 @@ export default function Page() {
               h3Mode={h3Mode}
               fuelDomain={fuelDomain}
               selectedFlight={selectedFlight}
+              scenario={scenario}
               onSelectFlight={handleSelectFlight}
             />
           ) : (
-            <Scene3D flights={filteredFlights} fuelDomain={fuelDomain} />
+            <Scene3D flights={filteredFlights} fuelDomain={fuelDomain} scenario={scenario} />
           )}
         </main>
 
         <aside className="flex flex-col gap-3 p-3 w-[240px] shrink-0 overflow-y-auto">
-          <DetailPanel flight={selectedFlight} fuelDomain={fuelDomain} />
+          <SavingsPanel optimization={summary?.optimization} />
+          <DetailPanel flight={selectedFlight} fuelDomain={fuelDomain} scenario={scenario} />
         </aside>
       </div>
     </div>

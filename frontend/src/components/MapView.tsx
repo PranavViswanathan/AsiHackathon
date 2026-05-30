@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import type { WebFlight, SectorsGeoJSON, H3Cell, H3Mode } from "@/lib/data/types";
+import type { WebFlight, SectorsGeoJSON, H3Cell, H3Mode, Scenario } from "@/lib/data/types";
 import { makeFuelScale } from "@/lib/fuelColor";
+import { displayFuel } from "@/lib/scenario";
 
 type Props = {
   flights: WebFlight[];
@@ -13,6 +14,7 @@ type Props = {
   h3Mode: H3Mode;
   fuelDomain: [number, number];
   selectedFlight: WebFlight | null;
+  scenario: Scenario;
   onSelectFlight: (flight: WebFlight | null) => void;
 };
 
@@ -37,6 +39,7 @@ type LayerContext = {
   showH3: boolean;
   h3Mode: H3Mode;
   fuelDomain: [number, number];
+  scenario: Scenario;
   onSelectFlight: (f: WebFlight | null) => void;
 };
 
@@ -98,6 +101,7 @@ export default function MapView({
   h3Mode,
   fuelDomain,
   selectedFlight,
+  scenario,
   onSelectFlight,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -132,10 +136,11 @@ export default function MapView({
     showH3,
     h3Mode,
     fuelDomain,
+    scenario,
     onSelectFlight,
   });
 
-  ctxRef.current = { flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, onSelectFlight };
+  ctxRef.current = { flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, scenario, onSelectFlight };
 
   const buildLayers = useCallback(
     (
@@ -213,7 +218,7 @@ export default function MapView({
           data: ctx.flights,
           getPath: (d: WebFlight) => d.path,
           getColor: (d: WebFlight) => {
-            const base = scale.toRgb(d.fuel_kg);
+            const base = scale.toRgb(displayFuel(d, ctx.scenario));
             // The focused flight is full color; every other flight is dimmed.
             // With nothing focused (e.g. initial load) all flights read as a
             // muted backdrop so the view isn't overwhelming.
@@ -231,7 +236,7 @@ export default function MapView({
           pickable: true,
           autoHighlight: false,
           updateTriggers: {
-            getColor: [ctx.fuelDomain[0], ctx.fuelDomain[1], focusKey],
+            getColor: [ctx.fuelDomain[0], ctx.fuelDomain[1], focusKey, ctx.scenario],
             getWidth: [focusKey],
           },
           onClick: (info: AnyObject) => {
@@ -518,7 +523,7 @@ export default function MapView({
     }
 
     updateLayers();
-  }, [flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, buildLayers]);
+  }, [flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, scenario, buildLayers]);
 
   return (
     <div

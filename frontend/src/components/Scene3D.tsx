@@ -3,12 +3,14 @@
 import { useMemo } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Line, Grid } from "@react-three/drei";
-import type { WebFlight } from "@/lib/data/types";
+import type { WebFlight, Scenario } from "@/lib/data/types";
 import { makeFuelScale } from "@/lib/fuelColor";
+import { displayAltitude, displayFuel } from "@/lib/scenario";
 
 type Props = {
   flights: WebFlight[];
   fuelDomain: [number, number];
+  scenario: Scenario;
 };
 
 const LON_CENTER = -98;
@@ -30,13 +32,15 @@ function projectPath(
 
 type FlightLineProps = {
   flight: WebFlight;
+  scenario: Scenario;
   color: string;
 };
 
-function FlightLine({ flight, color }: FlightLineProps) {
+function FlightLine({ flight, scenario, color }: FlightLineProps) {
+  const altitude = displayAltitude(flight, scenario);
   const points = useMemo(
-    () => projectPath(flight.path, flight.cruise_altitude_ft),
-    [flight.path, flight.cruise_altitude_ft]
+    () => projectPath(flight.path, altitude),
+    [flight.path, altitude]
   );
 
   if (points.length < 2) return null;
@@ -44,7 +48,7 @@ function FlightLine({ flight, color }: FlightLineProps) {
   return <Line points={points} color={color} lineWidth={1} />;
 }
 
-export default function Scene3D({ flights, fuelDomain }: Props) {
+export default function Scene3D({ flights, fuelDomain, scenario }: Props) {
   const scale = useMemo(() => makeFuelScale(fuelDomain[0], fuelDomain[1]), [fuelDomain]);
   const sample = useMemo(() => {
     if (flights.length <= 500) return flights;
@@ -71,7 +75,8 @@ export default function Scene3D({ flights, fuelDomain }: Props) {
         <FlightLine
           key={flight.flight_key}
           flight={flight}
-          color={scale.toHex(flight.fuel_kg)}
+          scenario={scenario}
+          color={scale.toHex(displayFuel(flight, scenario))}
         />
       ))}
     </Canvas>

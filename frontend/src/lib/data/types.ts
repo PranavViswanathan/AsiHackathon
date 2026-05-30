@@ -3,13 +3,26 @@ export type WebFlight = {
   flight_number: string;
   origin: string;
   destination: string;
-  cruise_altitude_ft: number;
   aircraft_class: "narrowbody" | "regional" | "widebody";
+  aircraft_type?: string | null;
   is_airborne: boolean;
   distance_nm: number;
+  path: [number, number][];
+  // baseline
+  cruise_altitude_ft: number;
   fuel_kg: number;
   co2_kg: number;
-  path: [number, number][];
+  // optimized scenario (optimizer changes only altitude + departure time)
+  opt_cruise_altitude_ft?: number;
+  opt_departure_shift_min?: number;
+  opt_fuel_kg?: number;
+  opt_co2_kg?: number;
+  recommended?: boolean;
+  // per-flight savings
+  fuel_saved_kg?: number;
+  co2_saved_kg?: number;
+  cost_saved_usd?: number;
+  recommendation?: string | null;
 };
 
 export type SectorProperties = {
@@ -49,6 +62,22 @@ export type ByClass = {
   widebody: number;
 };
 
+export type Optimization = {
+  baseline_fuel_kg: number;
+  optimized_fuel_kg: number;
+  fuel_saved_kg: number;
+  fuel_saved_pct: number;
+  n_altitude_changes: number;
+  n_departure_changes: number;
+  overloaded_sectors_before: number;
+  overloaded_sectors_after: number;
+  fuel_price_usd_per_kg?: number;
+  cost_baseline_usd?: number;
+  cost_optimized_usd?: number;
+  cost_saved_usd?: number;
+  co2_saved_kg?: number;
+};
+
 export type Summary = {
   snapshot: string;
   asked_at: string;
@@ -58,6 +87,7 @@ export type Summary = {
   total_distance_nm: number;
   by_class: ByClass;
   scenario: string;
+  optimization?: Optimization | null;
 };
 
 export type SnapshotsManifest = {

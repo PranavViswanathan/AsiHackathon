@@ -1,15 +1,11 @@
 "use client";
 
 import type { Summary, Scenario } from "@/lib/data/types";
+import { formatUsd } from "@/lib/cost";
 
 type Props = {
   summary: Summary | null;
   scenario: Scenario;
-};
-
-const SCENARIO_LABEL: Record<Scenario, string> = {
-  baseline: "baseline",
-  recommended: "optimal",
 };
 
 function formatLarge(n: number): string {
@@ -72,8 +68,22 @@ export default function SummaryHeader({ summary, scenario }: Props) {
       <Stat label="Fuel" value={formatLarge(summary.total_fuel_kg)} unit="kg" />
       <Stat label="CO2" value={formatLarge(summary.total_co2_kg)} unit="kg" />
       <Stat label="Distance" value={formatLarge(summary.total_distance_nm)} unit="nm" />
+      {summary.optimization?.cost_saved_usd != null && (
+        <div className="flex flex-col">
+          <span className="text-xs text-emerald-400/80 uppercase tracking-wider">Saved</span>
+          <span className="text-xl font-bold font-mono text-emerald-400">
+            {formatUsd(summary.optimization.cost_saved_usd)}
+            <span className="text-xs text-emerald-400/60 ml-1">
+              {formatLarge(summary.optimization.fuel_saved_kg)} kg
+            </span>
+          </span>
+        </div>
+      )}
       <div className="ml-auto text-xs text-gray-500">
-        Snapshot: {formatSnapshot(summary.snapshot)} &bull; {SCENARIO_LABEL[scenario]}
+        Snapshot: {formatSnapshot(summary.snapshot)} &bull;{" "}
+        <span className={scenario === "recommended" ? "text-emerald-400" : ""}>
+          {scenario === "recommended" ? "optimized" : "baseline"}
+        </span>
       </div>
     </header>
   );

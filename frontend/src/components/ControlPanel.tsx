@@ -152,7 +152,7 @@ export default function ControlPanel({
             }`}
             onClick={() => recommendedAvailable && onScenarioChange("recommended")}
           >
-            Optimal
+            Optimized
           </button>
         </div>
         {!recommendedAvailable && (
