@@ -12,6 +12,10 @@ data/hackathon_data_bundle
 /hackathon_data_bundle/
 .venv/
 data/artifacts/
-frontend/public/data/
+# Generated web data is ignored, except the frozen showcase snapshot, which we
+# commit so the demo works on a fresh clone without rebuilding the pipeline.
+frontend/public/data/*
+!frontend/public/data/snapshots.json
+!frontend/public/data/asked_at_2025-05-29T21:00:00Z/
 .pytest_cache/
 .DS_Store
