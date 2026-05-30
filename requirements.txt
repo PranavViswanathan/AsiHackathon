@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+networkx
+numpy
+pandas
+shapely
+matplotlib
+scipy
+python-dotenv
