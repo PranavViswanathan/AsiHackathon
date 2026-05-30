@@ -210,3 +210,58 @@ make build-wind        # also fetch + cache Open-Meteo winds (network on first r
 **Next:** Phase 4 — real H3 aggregation (`src/algorithm/h3agg.py`) + sector
 occupancy (`src/algorithm/sectors.py`); the `/api/h3` and sector `load` endpoints
 light up once those artifacts exist.
+
+---
+
+## Phase 4 — H3 energy heatmap + sector occupancy
+
+**Goal:** turn the two remaining stubs into real artifacts — an H3 fuel/traffic
+heatmap and per-sector-time-bin occupancy vs capacity — and light up the
+`/api/h3`, `/api/sectors`, and `/api/sector_load` endpoints that were serving
+placeholders.
+
+**Done:**
+- `src/algorithm/h3agg.py` — `aggregate_h3(flights, estimates)`: densifies each
+  route (~20 nm), bins points to H3 cells (h3 v4 `latlng_to_cell`, res 4), spreads
+  each flight's fuel across cells by in-cell distance, counts distinct flights,
+  and emits `[{h3, fuel_kg, n_flights, mean_kg, congestion}]` (congestion =
+  traffic normalised to [0, 1]).
+- `src/algorithm/sectors.py` — `aggregate_sectors(scenario, sectors_path)`:
+  time-parameterised track per flight (constant cruise), sampled every 5 min,
+  binned to 15-min windows; distinct flights per (sector, bin) counted via a
+  vectorised shapely `STRtree.query(..., predicate="within")`, split by HIGH/LOW
+  band (`>= 35000 ft`). Emits peak load, `over_demand`, and `by_bin` per sector.
+- `src/build.py` — writes real `h3.json` + new `sectors.json`; summary gains
+  `n_h3_cells` and `n_overloaded_sectors`.
+- `backend/store.py` + `backend/routers/sectors.py` — `/api/sectors` now reports
+  each sector's peak `load` + `over_demand` (bundle geometry merged with the
+  occupancy artifact); `/api/sector_load?t=` reports per-bin load; `/api/h3`
+  serves the real heatmap.
+- Updated `docs/API.md` (H3, sectors, sector_load, summary now populated).
+- Tests (+10): `tests/test_h3agg.py` (5), `tests/test_sectors.py` (4 — synthetic
+  1-sector airspace), and relaxed two backend sector assertions.
+
+**Verified:**
+- `make test` → **60 passed** (~28s).
+- Full offline build (storms + H3 + sectors, ~9s): 4,841 H3 cells (busiest
+  1,404 flights / 158,831 kg); 614 sectors occupied, **169 overloaded** (e.g.
+  LOW_020 peak 69 vs cap 20); `total_base_fuel_kg` = 63,193,079.2 — Phase 1
+  invariant still holds.
+- Backend smoke test: `/api/h3` → 4,841 cells; `/api/sectors` → 712 with 169
+  over-demand (HIGH_010 load 29/cap 20); `/api/sector_load?t=30` → 6 over-demand
+  in that bin.
+
+**Limitations / deferred:**
+- H3 fuel is distributed by sample count (≈ distance) rather than exact clipped
+  in-cell length — fine for a heatmap.
+- Occupancy uses 5-min sampling into 15-min bins (a transient crossing shorter
+  than the sample step can be missed); tune if needed.
+
+**Run it:**
+```
+make build             # now also writes h3.json + sectors.json (offline)
+```
+
+**Next:** Phase 5 — the optimizer (`src/algorithm/optimize.py`): altitude/wind
+pass + greedy capacity-repair using the sector occupancy from this phase, wired
+through `POST /api/solve` and a baseline/optimized summary.

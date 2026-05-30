@@ -16,6 +16,7 @@ from pathlib import Path
 
 from src.algorithm.fuel import FuelEstimate, estimate_fuel
 from src.algorithm.h3agg import aggregate_h3
+from src.algorithm.sectors import aggregate_sectors
 from src.data.ingest import Flight, Scenario, load_scenario
 from src.data.weather import WeatherGrid
 from src.data.wind import WindField, load_or_fetch_wind
@@ -45,18 +46,30 @@ def build_snapshot(
         _flight_record(flight, estimate)
         for flight, estimate in zip(scenario.flights, estimates)
     ]
+    h3_cells = aggregate_h3(scenario.flights, estimates)
+    sectors_data = _sectors(scenario, scenario_dir)
     summary = _summary(
         scenario_dir.name,
         scenario.asked_at.isoformat(),
         estimates,
         wind_enabled=wind is not None,
         storms_enabled=weather is not None,
+        n_h3_cells=len(h3_cells),
+        n_overloaded_sectors=sectors_data.get("n_overloaded", 0),
     )
 
     (out_dir / "flights.json").write_text(json.dumps(records))
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    (out_dir / "h3.json").write_text(json.dumps(aggregate_h3(estimates)))
+    (out_dir / "h3.json").write_text(json.dumps(h3_cells))
+    (out_dir / "sectors.json").write_text(json.dumps(sectors_data))
     return summary
+
+
+def _sectors(scenario: Scenario, scenario_dir: Path) -> dict:
+    sectors_path = scenario_dir.parent / "sectors.geojson"
+    if not sectors_path.exists():
+        return {"sectors": {}, "n_overloaded": 0}
+    return aggregate_sectors(scenario, sectors_path)
 
 
 def _load_wind(scenario: Scenario, out_dir: Path) -> WindField | None:
@@ -100,6 +113,8 @@ def _summary(
     *,
     wind_enabled: bool,
     storms_enabled: bool,
+    n_h3_cells: int = 0,
+    n_overloaded_sectors: int = 0,
 ) -> dict:
     by_class: dict[str, int] = {}
     for estimate in estimates:
@@ -120,6 +135,8 @@ def _summary(
         "total_storm_nm": round(sum(e.storm_nm for e in estimates), 1),
         "n_storm_flights": sum(1 for e in estimates if e.storm_nm > 0),
         "total_storm_penalty_kg": round(sum(e.storm_penalty_kg for e in estimates), 1),
+        "n_h3_cells": n_h3_cells,
+        "n_overloaded_sectors": n_overloaded_sectors,
         "by_class": by_class,
     }
 

@@ -10,9 +10,8 @@ Routes are grouped into routers under `backend/routers/`. CORS is opened to
 `FRONTEND_URL`. All payloads are JSON. Base path: `/api` (except `/health` and
 `/`).
 
-> **Status:** flight fuel estimates, the scenario summary, sectors, and weather
-> are live. Sector `load`/`over_demand` are `0`/`false` until the Phase 4
-> occupancy pass lands, and `h3` is `[]` until the Phase 4 aggregation lands.
+> **Status:** flight fuel estimates, the scenario summary, the H3 energy heatmap,
+> sector occupancy (load + over-demand), and weather are all live.
 > `POST /api/solve` currently (re)runs the pipeline; the optimizer knobs are
 > reserved for Phase 5.
 
@@ -65,8 +64,17 @@ verbatim. `404` if no flight matches.
 
 ## GET /api/h3
 
-The H3 energy heatmap cells: `[{ "h3", "fuel_kg", "n_flights", "mean_kg",
-"congestion" }]`. Empty `[]` until the Phase 4 aggregation lands.
+The H3 energy heatmap cells, sorted by `fuel_kg` descending:
+
+```json
+[
+  { "h3": "8426c87ffffffff", "fuel_kg": 158830.9, "n_flights": 1404, "mean_kg": 113.1, "congestion": 0.9846 }
+]
+```
+
+Each flight's fuel is spread across the cells its route crosses (proportional to
+in-cell distance). `congestion` is traffic density normalised to `[0, 1]`
+(cell flight count / busiest cell). Resolution is H3 level 4.
 
 ## GET /api/summary
 
@@ -87,6 +95,8 @@ Scenario totals (builds artifacts on first call).
   "total_storm_nm": 15903.0,
   "n_storm_flights": 361,
   "total_storm_penalty_kg": 13503.4,
+  "n_h3_cells": 4841,
+  "n_overloaded_sectors": 169,
   "by_class": { "narrowbody": 13248, "regional": 3189, "widebody": 250 }
 }
 ```
@@ -120,19 +130,20 @@ All 712 sectors with geometry and capacity.
 ```json
 [
   {
-    "name": "HIGH_006",
+    "name": "HIGH_010",
     "altitude_from_ft": 35000,
     "altitude_to_ft": 60000,
     "capacity": 20,
-    "load": 0,
+    "load": 29,
+    "over_demand": true,
     "geometry": { "type": "Polygon", "coordinates": [ ... ] }
   }
 ]
 ```
 
-`load` is the peak occupancy across time bins once the Phase 4 occupancy pass
-exists; `0` before then. The frontend colors sectors green/yellow/red from
-`load` vs `capacity`.
+`load` is the sector's **peak** occupancy across all time bins (`over_demand` =
+`load > capacity`). Sectors the pipeline never saw occupied report `load` 0. The
+frontend colors sectors green/yellow/red from `load` vs `capacity`.
 
 ## GET /api/sector_load
 
@@ -144,11 +155,13 @@ Per-sector occupancy versus capacity for one time-bin index.
 
 ```json
 [
-  { "name": "HIGH_006", "capacity": 20, "load": 0, "over_demand": false }
+  { "name": "HIGH_197", "capacity": 20, "load": 25, "over_demand": true },
+  { "name": "LOW_009", "capacity": 20, "load": 21, "over_demand": true }
 ]
 ```
 
-`over_demand` is `load > capacity`.
+`over_demand` is `load > capacity`. Bins are 15 minutes wide, indexed from
+`window_start` (see `sectors.json`'s `bin_minutes` / `n_bins`).
 
 ## GET /api/weather
 
