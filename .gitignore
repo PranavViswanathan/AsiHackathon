@@ -1,0 +1,15 @@
+# Hackathon data bundle (large, not versioned)
+/data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Outputs
+/out/
+*.png
+
+# OS
+.DS_Store
