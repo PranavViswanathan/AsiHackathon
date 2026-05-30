@@ -7,3 +7,7 @@ shapely
 matplotlib
 scipy
 python-dotenv
+pyproj
+h3
+requests
+pytest
