@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
 import SummaryHeader from "@/components/SummaryHeader";
 import ControlPanel from "@/components/ControlPanel";
 import DetailPanel from "@/components/DetailPanel";
+import FilterPanel, { DEFAULT_FILTERS, type Filters } from "@/components/FilterPanel";
 import { getDataSource } from "@/lib/data";
 import type {
   WebFlight,
@@ -34,8 +35,20 @@ export default function Page() {
   const [scenario, setScenario] = useState<Scenario>("baseline");
   const [recommendedAvailable, setRecommendedAvailable] = useState(false);
   const [snapshot, setSnapshot] = useState(DEFAULT_SNAPSHOT);
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const filteredFlights = useMemo(() => {
+    return flights.filter((f) => {
+      if (filters.aircraftClass !== "all" && f.aircraft_class !== filters.aircraftClass) return false;
+      if (filters.status === "airborne" && !f.is_airborne) return false;
+      if (filters.status === "preflight" && f.is_airborne) return false;
+      if (filters.origin !== "all" && f.origin !== filters.origin) return false;
+      if (filters.destination !== "all" && f.destination !== filters.destination) return false;
+      return true;
+    });
+  }, [flights, filters]);
 
   useEffect(() => {
     const ds = getDataSource();
@@ -114,6 +127,12 @@ export default function Page() {
             onScenarioChange={handleScenarioChange}
             recommendedAvailable={recommendedAvailable}
           />
+          <FilterPanel
+            flights={flights}
+            filters={filters}
+            onChange={setFilters}
+            matchCount={filteredFlights.length}
+          />
         </aside>
 
         <main className="flex-1 relative overflow-hidden">
@@ -124,7 +143,7 @@ export default function Page() {
           )}
           {viewMode === "2d" ? (
             <MapView
-              flights={flights}
+              flights={filteredFlights}
               sectors={sectors}
               h3Cells={h3Cells}
               showSectors={showSectors}
@@ -132,7 +151,7 @@ export default function Page() {
               onSelectFlight={handleSelectFlight}
             />
           ) : (
-            <Scene3D flights={flights} />
+            <Scene3D flights={filteredFlights} />
           )}
         </main>
 

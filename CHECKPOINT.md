@@ -360,18 +360,25 @@ the live API later by changing one env var. deck.gl + MapLibre (2D) and Three.js
 **Switch static -> API later:** set `NEXT_PUBLIC_DATA_SOURCE=api` and
 `NEXT_PUBLIC_API_URL` in `frontend/.env.local`. No component changes.
 
+**Follow-up changes:**
+- Map fix: corrected `fuelColor` (d3 returns `rgb()` not hex), brightened the
+  scale, thickened routes, and added white US state boundaries
+  (`public/geo/us-states.json`).
+- H3 wired end-to-end: `export_web.py` now reads the pipeline `h3.json` and writes
+  `h3_fuel.json` + `h3_traffic.json` (`{hex, value}`); MapView renders the
+  hexagons under the flights with a normalized heat color (the old
+  `255 - value*10` always-red bug is gone). 4,841 cells.
+- `FilterPanel` added: dropdowns for aircraft class, airborne status, origin, and
+  destination; `page.tsx` filters flights (memoized) before both 2D and 3D views.
+- 3D altitude: `Scene3D` lifts each path to `cruise_altitude_ft / 10000` (was a
+  flat `y=0`) and adds a ground grid for reference.
+
 **Limitations / deferred:**
-- H3 layer renders empty until the pipeline H3 artifact is wired into the export
-  (`export_web.py` still emits `h3_fuel.json` as `[]`; Phase 4 now produces real
-  `h3.json`).
 - Only the baseline scenario exists; the `recommended` toggle goes live once the
   export passes through the Phase 5 `opt_*` fields / `flights_recommended.json`.
 - Static flights are downsampled to 1,500 for browser performance.
 - deck.gl 9.x layer constructors needed `unknown` casts under the SSR
   dynamic-import pattern (noted by the builder).
-- Map fix: corrected `fuelColor` (d3 returns `rgb()` not hex), brightened the
-  scale, thickened routes, and added white US state boundaries
-  (`public/geo/us-states.json`).
 
 **Run it:**
 ```

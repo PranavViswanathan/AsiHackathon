@@ -69,6 +69,24 @@ export default function MapView({
         })
       );
 
+      if (currentShowH3 && currentH3.length > 0) {
+        const h3Max = currentH3.reduce((m, c) => Math.max(m, c.value), 0) || 1;
+        layers.push(
+          new H3HexagonLayer({
+            id: "h3",
+            data: currentH3,
+            getHexagon: (d: H3Cell) => d.hex,
+            getFillColor: (d: H3Cell) => {
+              const ratio = Math.sqrt(Math.min(1, d.value / h3Max));
+              return [255, Math.round(220 * (1 - ratio)), 30, 150];
+            },
+            extruded: false,
+            stroked: false,
+            pickable: false,
+          })
+        );
+      }
+
       layers.push(
         new PathLayer({
           id: "flights",
@@ -97,19 +115,6 @@ export default function MapView({
             getLineColor: [100, 200, 255, 120],
             getLineWidth: 1,
             lineWidthMinPixels: 1,
-            pickable: false,
-          })
-        );
-      }
-
-      if (currentShowH3 && currentH3.length > 0) {
-        layers.push(
-          new H3HexagonLayer({
-            id: "h3",
-            data: currentH3,
-            getHexagon: (d: H3Cell) => d.hex,
-            getFillColor: (d: H3Cell) => [255, Math.max(0, 255 - d.value * 10), 0, 180],
-            extruded: false,
             pickable: false,
           })
         );

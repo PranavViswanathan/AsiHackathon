@@ -69,6 +69,14 @@ def _sectors(sectors_path: Path) -> dict[str, Any]:
     return {"type": "FeatureCollection", "features": features}
 
 
+def _write_h3(artifacts_dir: Path, out_dir: Path) -> None:
+    cells = _read_json(artifacts_dir / "h3.json")
+    fuel = [{"hex": c["h3"], "value": c["fuel_kg"]} for c in cells]
+    traffic = [{"hex": c["h3"], "value": c["n_flights"]} for c in cells]
+    (out_dir / "h3_fuel.json").write_text(json.dumps(fuel))
+    (out_dir / "h3_traffic.json").write_text(json.dumps(traffic))
+
+
 def export_snapshot(
     snapshot: str,
     artifacts_root: Path | str = DEFAULT_ARTIFACTS,
@@ -88,7 +96,7 @@ def export_snapshot(
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "flights_baseline.json").write_text(json.dumps(web_flights))
     (out_dir / "summary.json").write_text(json.dumps({**summary, "scenario": "baseline"}))
-    (out_dir / "h3_fuel.json").write_text(json.dumps([]))
+    _write_h3(artifacts_dir, out_dir)
     (out_dir / "sectors.json").write_text(json.dumps(_sectors(Path(sectors_path))))
 
     manifest = {
