@@ -43,7 +43,9 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
 
   const filteredFlights = useMemo(() => {
+    const query = filters.search.trim().toUpperCase();
     return flights.filter((f) => {
+      if (query && !f.flight_number.toUpperCase().includes(query)) return false;
       if (filters.aircraftClass !== "all" && f.aircraft_class !== filters.aircraftClass) return false;
       if (filters.status === "airborne" && !f.is_airborne) return false;
       if (filters.status === "preflight" && f.is_airborne) return false;
@@ -117,6 +119,19 @@ export default function Page() {
     setScenario(s);
   }, []);
 
+  const handleResetFilters = useCallback(() => {
+    setFilters(DEFAULT_FILTERS);
+    setSelectedFlight(null);
+  }, []);
+
+  // When the search narrows to a single flight (e.g. picking a flight number
+  // from the dropdown), make it the active flight so the map focuses + zooms.
+  useEffect(() => {
+    if (filters.search.trim() !== "" && filteredFlights.length === 1) {
+      setSelectedFlight(filteredFlights[0]);
+    }
+  }, [filters.search, filteredFlights]);
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-gray-950">
       <SummaryHeader summary={summary} scenario={scenario} />
@@ -147,6 +162,7 @@ export default function Page() {
             flights={flights}
             filters={filters}
             onChange={setFilters}
+            onReset={handleResetFilters}
             matchCount={filteredFlights.length}
           />
         </aside>
@@ -166,6 +182,7 @@ export default function Page() {
               showH3={showH3}
               h3Mode={h3Mode}
               fuelDomain={fuelDomain}
+              selectedFlight={selectedFlight}
               scenario={scenario}
               onSelectFlight={handleSelectFlight}
             />
