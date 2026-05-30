@@ -1,9 +1,11 @@
 "use client";
 
-import type { Summary } from "@/lib/data/types";
+import type { Summary, Scenario } from "@/lib/data/types";
+import { formatUsd } from "@/lib/cost";
 
 type Props = {
   summary: Summary | null;
+  scenario: Scenario;
 };
 
 function formatLarge(n: number): string {
@@ -49,7 +51,7 @@ function Stat({ label, value, unit }: StatProps) {
   );
 }
 
-export default function SummaryHeader({ summary }: Props) {
+export default function SummaryHeader({ summary, scenario }: Props) {
   if (!summary) {
     return (
       <header className="flex items-center gap-6 px-6 py-3 bg-gray-950 border-b border-gray-800">
@@ -66,8 +68,22 @@ export default function SummaryHeader({ summary }: Props) {
       <Stat label="Fuel" value={formatLarge(summary.total_fuel_kg)} unit="kg" />
       <Stat label="CO2" value={formatLarge(summary.total_co2_kg)} unit="kg" />
       <Stat label="Distance" value={formatLarge(summary.total_distance_nm)} unit="nm" />
+      {summary.optimization?.cost_saved_usd != null && (
+        <div className="flex flex-col">
+          <span className="text-xs text-emerald-400/80 uppercase tracking-wider">Saved</span>
+          <span className="text-xl font-bold font-mono text-emerald-400">
+            {formatUsd(summary.optimization.cost_saved_usd)}
+            <span className="text-xs text-emerald-400/60 ml-1">
+              {formatLarge(summary.optimization.fuel_saved_kg)} kg
+            </span>
+          </span>
+        </div>
+      )}
       <div className="ml-auto text-xs text-gray-500">
-        Snapshot: {formatSnapshot(summary.snapshot)} &bull; {summary.scenario}
+        Snapshot: {formatSnapshot(summary.snapshot)} &bull;{" "}
+        <span className={scenario === "recommended" ? "text-emerald-400" : ""}>
+          {scenario === "recommended" ? "optimized" : "baseline"}
+        </span>
       </div>
     </header>
   );

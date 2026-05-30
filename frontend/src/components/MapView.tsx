@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import type { WebFlight, SectorsGeoJSON, H3Cell, H3Mode } from "@/lib/data/types";
+import type { WebFlight, SectorsGeoJSON, H3Cell, H3Mode, Scenario } from "@/lib/data/types";
 import { makeFuelScale } from "@/lib/fuelColor";
+import { displayFuel } from "@/lib/scenario";
 
 type Props = {
   flights: WebFlight[];
@@ -12,6 +13,7 @@ type Props = {
   showH3: boolean;
   h3Mode: H3Mode;
   fuelDomain: [number, number];
+  scenario: Scenario;
   onSelectFlight: (flight: WebFlight | null) => void;
 };
 
@@ -36,6 +38,7 @@ type LayerContext = {
   showH3: boolean;
   h3Mode: H3Mode;
   fuelDomain: [number, number];
+  scenario: Scenario;
   onSelectFlight: (f: WebFlight | null) => void;
 };
 
@@ -96,6 +99,7 @@ export default function MapView({
   showH3,
   h3Mode,
   fuelDomain,
+  scenario,
   onSelectFlight,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -109,10 +113,11 @@ export default function MapView({
     showH3,
     h3Mode,
     fuelDomain,
+    scenario,
     onSelectFlight,
   });
 
-  ctxRef.current = { flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, onSelectFlight };
+  ctxRef.current = { flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, scenario, onSelectFlight };
 
   const buildLayers = useCallback(
     (
@@ -185,14 +190,14 @@ export default function MapView({
           id: "flights",
           data: ctx.flights,
           getPath: (d: WebFlight) => d.path,
-          getColor: (d: WebFlight) => scale.toRgb(d.fuel_kg),
+          getColor: (d: WebFlight) => scale.toRgb(displayFuel(d, ctx.scenario)),
           getWidth: 2.5,
           widthUnits: "pixels",
           widthMinPixels: 2,
           capRounded: true,
           jointRounded: true,
           pickable: true,
-          updateTriggers: { getColor: [ctx.fuelDomain[0], ctx.fuelDomain[1]] },
+          updateTriggers: { getColor: [ctx.fuelDomain[0], ctx.fuelDomain[1], ctx.scenario] },
           onClick: (info: AnyObject) => {
             ctx.onSelectFlight((info.object as WebFlight | undefined) ?? null);
           },
@@ -300,7 +305,7 @@ export default function MapView({
     }
 
     updateLayers();
-  }, [flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, buildLayers]);
+  }, [flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, scenario, buildLayers]);
 
   return (
     <div
