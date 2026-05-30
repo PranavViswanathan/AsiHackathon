@@ -9,7 +9,7 @@ SCENARIO ?= asked_at_2025-05-29T21:00:00Z
 SCENARIO_DIR := ./data/hackathon_data_bundle/$(SCENARIO)
 
 .DEFAULT_GOAL := help
-.PHONY: help venv install install-py install-web env build backend frontend dev test clean clean-all
+.PHONY: help venv install install-py install-web env build build-wind backend frontend dev test clean clean-all
 
 help: ## Show this help
 	@echo "AirFlow targets:"
@@ -41,6 +41,9 @@ env: ## Create .env from .env.example if missing
 
 build: ## Run the precompute pipeline for $(SCENARIO) -> data/artifacts/<snapshot>/
 	$(VENV_BIN)/python -m src.build --scenario-dir $(SCENARIO_DIR)
+
+build-wind: ## Build with Open-Meteo winds (fetched once, cached to wind_cache.npz)
+	$(VENV_BIN)/python -m src.build --scenario-dir $(SCENARIO_DIR) --wind
 
 backend: ## Run the FastAPI backend (reload) on $(PORT)
 	SCENARIO_DIR=$(SCENARIO_DIR) $(VENV_BIN)/uvicorn backend.main:app --reload --port $(PORT)

@@ -91,6 +91,183 @@ make build             # writes data/artifacts/<snapshot>/
 
 ---
 
+## Phase 2 — FastAPI backend serving artifacts
+
+**Goal:** stand up `backend/` over the Phase 1 artifacts so the frontend (and
+demo) can read flights, summary, H3, sectors, and weather over HTTP. Independent
+of the in-progress pipeline work (wind/sectors/H3/optimizer) — it consumes the
+existing artifact schema and reads sectors/weather straight from the bundle.
+
+**Done:**
+- `backend/config.py` — `Settings` from `SCENARIO_DIR` / `ARTIFACT_ROOT` /
+  `FRONTEND_URL` env (defaults match the Makefile and `.env.example`).
+- `backend/store.py` — `ArtifactStore`: serves `flights.json`/`summary.json`/
+  `h3.json`, builds them on first access via `src.build.build_snapshot`, caches
+  in memory; `flight(id)` lookup.
+- `backend/bundle.py` — `BundleReader`: parses `sectors.geojson`, indexes the
+  `wx/refc|retop/*.npz` strips by `[valid_from, valid_to)`, selects the strip
+  covering an instant, loads + downsamples grids (nodata → `null`). Grid math per
+  `docs/DATA.md`.
+- `backend/routers/{routing,sectors,weather}.py` — reused the empty stubs:
+  `GET /api/flights`, `GET /api/flight/{id}`, `GET /api/h3`, `GET /api/summary`,
+  `POST /api/solve`; `GET /api/sectors`, `GET /api/sector_load?t=`;
+  `GET /api/weather?t=&step=`.
+- `backend/main.py` — FastAPI app, CORS to `FRONTEND_URL`, `/health`, `/` banner.
+- Rewrote `docs/API.md` to match the artifact-serving backend (was the old
+  live-solver contract).
+- Config: added `httpx` to `requirements.txt` (TestClient dep); gitignored the
+  root `hackathon_data_bundle/` and the `data/hackathon_data_bundle` symlink.
+- Tests (12, all passing): `tests/test_backend.py` — hermetic 2-flight fixture
+  scenario (synthetic routes + 2 weather strips + 2 sectors), `TestClient`.
+
+**Verified:**
+- `make test` → **33 passed** (21 Phase 1 + 12 Phase 2).
+- Live smoke test (`uvicorn backend.main:app`, scenario
+  `asked_at_2025-05-29T21:00:00Z`): `/api/summary` builds 16,687 flights
+  (63.2M kg fuel, 199.7M kg CO₂; 13,248 narrowbody / 3,189 regional / 250
+  widebody — matches Phase 1); `/api/flights` → 16,687; `/api/sectors` → 712;
+  `/api/weather?t=…&step=64` selects the covering strip and returns a (4, 6) grid.
+
+**Limitations / deferred:**
+- Sector `load`/`over_demand` are `0`/`false` until the Phase 4 occupancy pass;
+  `/api/h3` is `[]` until Phase 4 aggregation.
+- `POST /api/solve` (re)runs the pipeline and returns the summary; optimizer
+  knobs (`lambda_*`, `iterations`) are accepted but reserved for Phase 5.
+
+**Local setup note:** the data bundle on this machine sits at the repo root
+(`hackathon_data_bundle/`); tests and the Makefile expect
+`data/hackathon_data_bundle/`. Bridged with a gitignored symlink:
+`ln -s ../hackathon_data_bundle data/hackathon_data_bundle`.
+
+**Run it:**
+```
+make install-py        # now also installs httpx
+make backend           # uvicorn on :8000  (set SCENARIO via env/Makefile)
+# GET http://localhost:8000/docs  for the live OpenAPI UI
+```
+
+**Next:** Phase 3 — Open-Meteo wind + storm penalties in the pipeline; the
+backend endpoints already carry the richer per-flight fields once `src/` emits them.
+
+---
+
+## Phase 3 — Wind + storms (wind-aware fuel, storm penalty)
+
+**Goal:** make fuel depend on weather — wind via ground speed, plus a storm
+penalty on convectively exposed segments — and surface the new fields through the
+existing artifacts/endpoints. The zero-wind path stays byte-for-byte identical.
+
+**Done:**
+- `src/data/weather.py` — `WeatherGrid`: indexes the `wx/refc|retop/*.npz` strips
+  by `[valid_from, valid_to)`, bisect-selects the strip covering a sample time
+  (nearest fallback), maps lat/lon→cell (`docs/DATA.md`), and reports
+  `exposure(lat, lon, alt, t)` = `refc >= 40 AND alt < retop` with nodata handling.
+  Offline (no network).
+- `src/data/wind.py` — `WindField` (gridded, hourly, per pressure level) with
+  bilinear-in-space / nearest-in-time sampling, pressure level nearest the cruise
+  altitude, and met-direction→(east,north) conversion. `fetch_wind_field` pulls a
+  coarse CONUS grid from Open-Meteo (`wind_speed_unit=kn`, 200/250 hPa);
+  `load_or_fetch_wind` caches to `wind_cache.npz` and returns `None` on any failure
+  so the build cleanly degrades to zero-wind.
+- `src/algorithm/fuel.py` — `estimate_fuel(flight, wind=None, weather=None)` now
+  integrates per segment: `GS = max(TAS + along_track_wind, 150)` (floor only on
+  the wind path), storm penalty = `+15%` fuel on exposed segments. New
+  `FuelEstimate` fields: `base_fuel_kg`, `headwind_nm`, `tailwind_nm`,
+  `mean_along_track_kt`, `storm_nm`, `max_refc_dbz`, `storm_penalty_kg` — all
+  defaulted so the no-arg call is unchanged.
+- `src/build.py` — storms **on by default** (offline), winds **opt-in**
+  (`--wind` / `AIRFLOW_WIND=1`, cached). Enriched `flights.json` + new `summary`
+  totals (`total_base_fuel_kg`, `wind_delta_fuel_kg`, `total_storm_nm`,
+  `n_storm_flights`, `total_storm_penalty_kg`, `wind_enabled`, `storms_enabled`).
+- `Makefile` — added `build-wind`; `.env.example` notes `AIRFLOW_WIND`. Updated
+  `docs/API.md` flight/summary schemas.
+- Tests (+18): `tests/test_wind.py` (11) and `tests/test_weather.py` (8) — all
+  offline (HTTP mocked / hand-built fields).
+
+**Verified:**
+- `make test` → **51 passed** (~17s).
+- Build (storms only, offline, full scenario): 361 storm-exposed flights,
+  15,903 nm storm distance, +13,503 kg penalty; `total_base_fuel_kg` =
+  63,193,079.2 — **identical to Phase 1**, confirming the zero-wind path is intact.
+  Example: UAL285 KIAH→KLAX @34k ft, 417 nm in storm, max 52.8 dBZ, +335.6 kg.
+- Build with `--wind`: live Open-Meteo fetch succeeded (5×9 grid × 48 h × 200/250
+  hPa; sample @(40,-100) 34k ft → u=+47.8 kt eastward, realistic jet aloft);
+  `wind_delta_fuel_kg` = +451,710 kg. Rebuild loads `wind_cache.npz` (2 min → 20 s,
+  no network, identical totals).
+
+**Limitations / deferred:**
+- Storm penalty is a flat +15% on exposed segments (a proxy, not a routed detour);
+  lateral reroutes are Phase 5.
+- `WeatherGrid` (src) and `backend/bundle.py` parse strips independently; a future
+  cleanup could share one implementation.
+
+**Run it:**
+```
+make build             # storms on, zero-wind (offline, deterministic)
+make build-wind        # also fetch + cache Open-Meteo winds (network on first run)
+```
+
+**Next:** Phase 4 — real H3 aggregation (`src/algorithm/h3agg.py`) + sector
+occupancy (`src/algorithm/sectors.py`); the `/api/h3` and sector `load` endpoints
+light up once those artifacts exist.
+
+---
+
+## Phase 4 — H3 energy heatmap + sector occupancy
+
+**Goal:** turn the two remaining stubs into real artifacts — an H3 fuel/traffic
+heatmap and per-sector-time-bin occupancy vs capacity — and light up the
+`/api/h3`, `/api/sectors`, and `/api/sector_load` endpoints that were serving
+placeholders.
+
+**Done:**
+- `src/algorithm/h3agg.py` — `aggregate_h3(flights, estimates)`: densifies each
+  route (~20 nm), bins points to H3 cells (h3 v4 `latlng_to_cell`, res 4), spreads
+  each flight's fuel across cells by in-cell distance, counts distinct flights,
+  and emits `[{h3, fuel_kg, n_flights, mean_kg, congestion}]` (congestion =
+  traffic normalised to [0, 1]).
+- `src/algorithm/sectors.py` — `aggregate_sectors(scenario, sectors_path)`:
+  time-parameterised track per flight (constant cruise), sampled every 5 min,
+  binned to 15-min windows; distinct flights per (sector, bin) counted via a
+  vectorised shapely `STRtree.query(..., predicate="within")`, split by HIGH/LOW
+  band (`>= 35000 ft`). Emits peak load, `over_demand`, and `by_bin` per sector.
+- `src/build.py` — writes real `h3.json` + new `sectors.json`; summary gains
+  `n_h3_cells` and `n_overloaded_sectors`.
+- `backend/store.py` + `backend/routers/sectors.py` — `/api/sectors` now reports
+  each sector's peak `load` + `over_demand` (bundle geometry merged with the
+  occupancy artifact); `/api/sector_load?t=` reports per-bin load; `/api/h3`
+  serves the real heatmap.
+- Updated `docs/API.md` (H3, sectors, sector_load, summary now populated).
+- Tests (+10): `tests/test_h3agg.py` (5), `tests/test_sectors.py` (4 — synthetic
+  1-sector airspace), and relaxed two backend sector assertions.
+
+**Verified:**
+- `make test` → **60 passed** (~28s).
+- Full offline build (storms + H3 + sectors, ~9s): 4,841 H3 cells (busiest
+  1,404 flights / 158,831 kg); 614 sectors occupied, **169 overloaded** (e.g.
+  LOW_020 peak 69 vs cap 20); `total_base_fuel_kg` = 63,193,079.2 — Phase 1
+  invariant still holds.
+- Backend smoke test: `/api/h3` → 4,841 cells; `/api/sectors` → 712 with 169
+  over-demand (HIGH_010 load 29/cap 20); `/api/sector_load?t=30` → 6 over-demand
+  in that bin.
+
+**Limitations / deferred:**
+- H3 fuel is distributed by sample count (≈ distance) rather than exact clipped
+  in-cell length — fine for a heatmap.
+- Occupancy uses 5-min sampling into 15-min bins (a transient crossing shorter
+  than the sample step can be missed); tune if needed.
+
+**Run it:**
+```
+make build             # now also writes h3.json + sectors.json (offline)
+```
+
+**Next:** Phase 5 — the optimizer (`src/algorithm/optimize.py`): altitude/wind
+pass + greedy capacity-repair using the sector occupancy from this phase, wired
+through `POST /api/solve` and a baseline/optimized summary.
+
+---
+
 ## Frontend slice — static-data UI, API-ready
 
 **Goal:** build the `frontend/` app reading static JSON now, designed to swap to
@@ -126,12 +303,17 @@ the live API later by changing one env var. deck.gl + MapLibre (2D) and Three.js
 `NEXT_PUBLIC_API_URL` in `frontend/.env.local`. No component changes.
 
 **Limitations / deferred:**
-- H3 layer renders empty until Phase 4 produces `h3_fuel.json`.
+- H3 layer renders empty until the pipeline H3 artifact is wired into the export
+  (`export_web.py` still emits `h3_fuel.json` as `[]`; Phase 4 now produces real
+  `h3.json`).
 - Only the baseline scenario exists; `recommended` toggle is inert until the
   optimizer (Phase 5) emits `flights_recommended.json`.
 - Static flights are downsampled to 1,500 for browser performance.
 - deck.gl 9.x layer constructors needed `unknown` casts under the SSR
   dynamic-import pattern (noted by the builder).
+- Map fix: corrected `fuelColor` (d3 returns `rgb()` not hex), brightened the
+  scale, thickened routes, and added white US state boundaries
+  (`public/geo/us-states.json`).
 
 **Run it:**
 ```

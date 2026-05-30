@@ -6,6 +6,8 @@ node_modules/
 *.npz
 *.gz
 data/hackathon_data_bundle/
+data/hackathon_data_bundle
+/hackathon_data_bundle/
 .venv/
 data/artifacts/
 frontend/public/data/
