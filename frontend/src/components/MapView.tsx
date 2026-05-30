@@ -4,6 +4,19 @@ import { useEffect, useRef, useCallback } from "react";
 import type { WebFlight, SectorsGeoJSON, H3Cell, H3Mode, Scenario } from "@/lib/data/types";
 import { makeFuelScale } from "@/lib/fuelColor";
 import { displayFuel, displayPath } from "@/lib/scenario";
+import {
+  type FlightTimes,
+  type FlightExposure,
+  type PathMetrics,
+  buildPathMetrics,
+  positionAt,
+} from "@/lib/flightAnim";
+import {
+  PLANE_ICON_URL,
+  PLANE_ICON_SIZE,
+  RING_ICON_URL,
+  RING_ICON_SIZE,
+} from "@/lib/planeIcon";
 
 type Props = {
   flights: WebFlight[];
@@ -16,6 +29,19 @@ type Props = {
   selectedFlight: WebFlight | null;
   scenario: Scenario;
   onSelectFlight: (flight: WebFlight | null) => void;
+  // Weather radar overlay
+  showWeather: boolean;
+  weatherBounds: [number, number, number, number] | null;
+  weatherFrameUrl: string | null;
+  // Aircraft animation
+  showAircraft: boolean;
+  flightTimes: FlightTimes | null;
+  clockMs: number;
+  // Show all flight routes (off = only the focused flight's route)
+  showPaths: boolean;
+  // Weather exposure per flight + which frame the clock is on
+  flightExposure: FlightExposure | null;
+  weatherFrameIndex: number;
 };
 
 const CARTO_DARK_STYLE =
@@ -41,6 +67,15 @@ type LayerContext = {
   fuelDomain: [number, number];
   scenario: Scenario;
   onSelectFlight: (f: WebFlight | null) => void;
+  showWeather: boolean;
+  weatherBounds: [number, number, number, number] | null;
+  weatherFrameUrl: string | null;
+  showAircraft: boolean;
+  flightTimes: FlightTimes | null;
+  clockMs: number;
+  showPaths: boolean;
+  flightExposure: FlightExposure | null;
+  weatherFrameIndex: number;
 };
 
 const TOOLTIP_STYLE = {
@@ -89,6 +124,20 @@ function getTooltip(info: AnyObject): AnyObject | null {
     };
   }
 
+  if (layer.id === "aircraft") {
+    const plane = object as { flight?: WebFlight; blocked?: boolean };
+    const f = plane.flight;
+    if (f) {
+      const warn = plane.blocked
+        ? `<br/><span style="color:#f87171">⚠ Flying through severe weather</span>`
+        : "";
+      return {
+        html: `<b>${f.flight_number}</b> ${f.origin} -> ${f.destination}<br/>${f.aircraft_class} &bull; ${Math.round(f.cruise_altitude_ft).toLocaleString()} ft${warn}`,
+        style: TOOLTIP_STYLE,
+      };
+    }
+  }
+
   return null;
 }
 
@@ -103,6 +152,15 @@ export default function MapView({
   selectedFlight,
   scenario,
   onSelectFlight,
+  showWeather,
+  weatherBounds,
+  weatherFrameUrl,
+  showAircraft,
+  flightTimes,
+  clockMs,
+  showPaths,
+  flightExposure,
+  weatherFrameIndex,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const deckRef = useRef<AnyObject | null>(null);
@@ -113,7 +171,11 @@ export default function MapView({
     GeoJsonLayer: new (props: AnyObject) => unknown;
     H3HexagonLayer: new (props: AnyObject) => unknown;
     TextLayer: new (props: AnyObject) => unknown;
+    BitmapLayer: new (props: AnyObject) => unknown;
+    IconLayer: new (props: AnyObject) => unknown;
   } | null>(null);
+  // Cumulative path lengths per flight, cached so animation ticks stay cheap.
+  const pathMetricsRef = useRef<Map<string, PathMetrics>>(new Map());
   // deck.gl/core helpers needed for the fly-to-flight behavior.
   const viewportCtorRef = useRef<(new (props: AnyObject) => { fitBounds: (b: number[][], o: AnyObject) => AnyObject }) | null>(null);
   const flyToCtorRef = useRef<(new (props: AnyObject) => unknown) | null>(null);
@@ -138,9 +200,37 @@ export default function MapView({
     fuelDomain,
     scenario,
     onSelectFlight,
+    showWeather,
+    weatherBounds,
+    weatherFrameUrl,
+    showAircraft,
+    flightTimes,
+    clockMs,
+    showPaths,
+    flightExposure,
+    weatherFrameIndex,
   });
 
-  ctxRef.current = { flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, scenario, onSelectFlight };
+  ctxRef.current = {
+    flights,
+    sectors,
+    h3Cells,
+    showSectors,
+    showH3,
+    h3Mode,
+    fuelDomain,
+    scenario,
+    onSelectFlight,
+    showWeather,
+    weatherBounds,
+    weatherFrameUrl,
+    showAircraft,
+    flightTimes,
+    clockMs,
+    showPaths,
+    flightExposure,
+    weatherFrameIndex,
+  };
 
   const buildLayers = useCallback(
     (
@@ -148,10 +238,31 @@ export default function MapView({
       GeoJsonLayer: new (props: AnyObject) => unknown,
       H3HexagonLayer: new (props: AnyObject) => unknown,
       TextLayer: new (props: AnyObject) => unknown,
+      BitmapLayer: new (props: AnyObject) => unknown,
+      IconLayer: new (props: AnyObject) => unknown,
       ctx: LayerContext
     ) => {
       const layers: unknown[] = [];
       const scale = makeFuelScale(ctx.fuelDomain[0], ctx.fuelDomain[1]);
+
+      // Weather radar sits just above the basemap so flight paths, sectors and
+      // hexagons all read on top of it. The image swaps per animation frame.
+      if (ctx.showWeather && ctx.weatherBounds && ctx.weatherFrameUrl) {
+        layers.push(
+          new BitmapLayer({
+            id: "weather-radar",
+            bounds: ctx.weatherBounds,
+            image: ctx.weatherFrameUrl,
+            opacity: 0.7,
+            pickable: false,
+            // Smooth the coarse 256x358 grid when zoomed in.
+            textureParameters: {
+              minFilter: "linear",
+              magFilter: "linear",
+            },
+          })
+        );
+      }
 
       layers.push(
         new GeoJsonLayer({
@@ -210,64 +321,193 @@ export default function MapView({
       }
 
       // A selected (clicked) flight stays focused regardless of mouse movement;
-      // otherwise hover drives the focus.
-      const focusKey = selectedKeyRef.current ?? hoveredKeyRef.current;
+      // otherwise hover drives the focus. Only the focused flight's route is
+      // drawn — every other flight is represented solely by its moving plane.
+      const selectedKey = selectedKeyRef.current;
+      const focusKey = selectedKey ?? hoveredKeyRef.current;
+      const focusedFlight = focusKey
+        ? ctx.flights.find((f) => f.flight_key === focusKey)
+        : undefined;
+      // With "Paths" on, every route is drawn (thin); the focused flight is
+      // brighter and a touch wider. With it off, only the focused flight's
+      // route shows (hover/click).
+      const pathData = ctx.showPaths
+        ? ctx.flights
+        : focusedFlight
+        ? [focusedFlight]
+        : [];
       layers.push(
         new PathLayer({
           id: "flights",
-          data: ctx.flights,
+          data: pathData,
           getPath: (d: WebFlight) => displayPath(d, ctx.scenario),
           getColor: (d: WebFlight) => {
             const base = scale.toRgb(displayFuel(d, ctx.scenario));
-            // The focused flight is full color; every other flight is dimmed.
-            // With nothing focused (e.g. initial load) all flights read as a
-            // muted backdrop so the view isn't overwhelming.
-            if (focusKey && d.flight_key === focusKey) {
-              return base;
-            }
-            return [base[0], base[1], base[2], focusKey ? 8 : 45];
+            if (focusKey && d.flight_key === focusKey) return base;
+            // Other routes (only visible when "Paths" is on) read as faint context.
+            return [base[0], base[1], base[2], focusKey ? 30 : 70];
           },
           getWidth: (d: WebFlight) =>
-            focusKey && d.flight_key === focusKey ? 4.5 : 2.5,
+            focusKey && d.flight_key === focusKey ? 1.6 : 0.6,
           widthUnits: "pixels",
-          widthMinPixels: 2,
+          widthMinPixels: 0.5,
           capRounded: true,
           jointRounded: true,
-          pickable: true,
-          autoHighlight: false,
+          pickable: false,
           updateTriggers: {
             getPath: [ctx.scenario],
             getColor: [ctx.fuelDomain[0], ctx.fuelDomain[1], focusKey, ctx.scenario],
             getWidth: [focusKey],
           },
-          onClick: (info: AnyObject) => {
-            const obj = (info.object as WebFlight | undefined) ?? null;
-            selectedKeyRef.current = obj ? obj.flight_key : null;
-            ctx.onSelectFlight(obj);
-            refreshLayersRef.current();
-            // Zoom to frame the clicked flight's full path.
-            if (obj) zoomToFlightRef.current(obj);
-          },
-          onHover: (info: AnyObject) => {
-            // While a flight is selected, it stays focused — ignore hover changes.
-            if (selectedKeyRef.current !== null) return;
-            // Otherwise hover subdues the other flights (no camera movement).
-            const obj = info.object as WebFlight | undefined;
-            const newKey = obj ? obj.flight_key : null;
-            if (newKey === hoveredKeyRef.current) return;
-            hoveredKeyRef.current = newKey;
-            refreshLayersRef.current();
-          },
         })
       );
 
+      // Animated aircraft: each flight is placed along its route by how far it
+      // is between take-off and landing at the current clock time. Flights that
+      // haven't departed or have already landed are dropped from the layer.
+      if (ctx.showAircraft && ctx.flightTimes) {
+        const metricsCache = pathMetricsRef.current;
+        type Plane = {
+          flight: WebFlight;
+          position: [number, number];
+          bearing: number;
+          blocked: boolean;
+        };
+        const planes: Plane[] = [];
+        for (const f of ctx.flights) {
+          const times = ctx.flightTimes.get(f.flight_key);
+          // Optimized routes have their own geometry, so animate along the path
+          // for the active scenario.
+          const path = displayPath(f, ctx.scenario);
+          if (!times || path.length < 2) continue;
+          // The optimizer can shift departure; slide the take-off/landing window.
+          const shiftMs =
+            ctx.scenario === "recommended"
+              ? (f.opt_departure_shift_min ?? 0) * 60_000
+              : 0;
+          const takeoff = times.takeoff + shiftMs;
+          const landing = times.landing + shiftMs;
+          const frac = (ctx.clockMs - takeoff) / (landing - takeoff);
+          if (frac < 0 || frac > 1) continue;
+
+          // Cache cumulative lengths per (flight, scenario) since the geometry differs.
+          const metricsKey = `${f.flight_key}:${ctx.scenario}`;
+          let metrics = metricsCache.get(metricsKey);
+          if (!metrics) {
+            metrics = buildPathMetrics(path);
+            metricsCache.set(metricsKey, metrics);
+          }
+          const { position, bearing } = positionAt(path, metrics, frac);
+          // Is this flight flying through dangerous weather at the current frame?
+          const blocked =
+            ctx.flightExposure?.get(f.flight_key)?.[ctx.weatherFrameIndex] === "1";
+          planes.push({ flight: f, position, bearing, blocked });
+        }
+
+        // Pulsing red halo behind any aircraft currently in severe weather.
+        const blockedPlanes = planes.filter((p) => p.blocked);
+        if (blockedPlanes.length > 0) {
+          const pulse = 0.5 + 0.5 * Math.sin(ctx.clockMs / 400);
+          layers.push(
+            new IconLayer({
+              id: "aircraft-warning",
+              data: blockedPlanes,
+              getIcon: () => ({
+                url: RING_ICON_URL,
+                width: RING_ICON_SIZE,
+                height: RING_ICON_SIZE,
+                mask: true,
+              }),
+              getPosition: (d: Plane) => d.position,
+              getSize: 30 + 10 * pulse,
+              getColor: [248, 113, 113, Math.round(140 + 90 * pulse)],
+              sizeUnits: "pixels",
+              pickable: false,
+              updateTriggers: {
+                getPosition: [ctx.clockMs, ctx.scenario],
+                getSize: [ctx.clockMs],
+                getColor: [ctx.clockMs],
+              },
+            })
+          );
+        }
+
+        layers.push(
+          new IconLayer({
+            id: "aircraft",
+            data: planes,
+            getIcon: () => ({
+              url: PLANE_ICON_URL,
+              width: PLANE_ICON_SIZE,
+              height: PLANE_ICON_SIZE,
+              mask: true,
+            }),
+            getPosition: (d: Plane) => d.position,
+            // IconLayer angle is degrees counter-clockwise; bearing is clockwise
+            // from north and the glyph points north, so negate.
+            getAngle: (d: Plane) => -d.bearing,
+            getSize: (d: Plane) =>
+              focusKey && d.flight.flight_key === focusKey ? 28 : 18,
+            getColor: (d: Plane) => {
+              // Aircraft in severe weather are flagged bright red regardless of fuel.
+              const base: [number, number, number] = d.blocked
+                ? [248, 113, 113]
+                : (scale.toRgb(displayFuel(d.flight, ctx.scenario)) as unknown as [
+                    number,
+                    number,
+                    number
+                  ]);
+              // Once a flight is selected, fade the rest so it stands out.
+              if (selectedKey && d.flight.flight_key !== selectedKey) {
+                return [base[0], base[1], base[2], 55];
+              }
+              return [base[0], base[1], base[2], 235];
+            },
+            sizeUnits: "pixels",
+            pickable: true,
+            updateTriggers: {
+              getPosition: [ctx.clockMs, ctx.scenario],
+              getAngle: [ctx.clockMs, ctx.scenario],
+              getColor: [
+                selectedKey,
+                ctx.scenario,
+                ctx.fuelDomain[0],
+                ctx.fuelDomain[1],
+                ctx.weatherFrameIndex,
+              ],
+              getSize: [focusKey],
+            },
+            onClick: (info: AnyObject) => {
+              const plane = info.object as Plane | undefined;
+              const obj = plane ? plane.flight : null;
+              selectedKeyRef.current = obj ? obj.flight_key : null;
+              ctx.onSelectFlight(obj);
+              refreshLayersRef.current();
+              if (obj) zoomToFlightRef.current(obj);
+            },
+            onHover: (info: AnyObject) => {
+              // While a flight is selected it stays focused — ignore hover.
+              if (selectedKeyRef.current !== null) return;
+              // Hovering a plane reveals its route (no camera movement).
+              const plane = info.object as Plane | undefined;
+              const newKey = plane ? plane.flight.flight_key : null;
+              if (newKey === hoveredKeyRef.current) return;
+              hoveredKeyRef.current = newKey;
+              refreshLayersRef.current();
+            },
+          })
+        );
+      }
+
       // Airport-code labels at the endpoints of the selected flight's path.
-      const selectedKey = selectedKeyRef.current;
       const selectedFlight = selectedKey
         ? ctx.flights.find((f) => f.flight_key === selectedKey)
         : undefined;
-      if (selectedFlight && selectedFlight.path.length > 0) {
-        const path = selectedFlight.path;
+      const selectedPath = selectedFlight
+        ? displayPath(selectedFlight, ctx.scenario)
+        : [];
+      if (selectedFlight && selectedPath.length > 0) {
+        const path = selectedPath;
         const labels = [
           { position: path[0], text: selectedFlight.origin },
           { position: path[path.length - 1], text: selectedFlight.destination },
@@ -311,6 +551,8 @@ export default function MapView({
       ctors.GeoJsonLayer,
       ctors.H3HexagonLayer,
       ctors.TextLayer,
+      ctors.BitmapLayer,
+      ctors.IconLayer,
       ctxRef.current
     );
     (deck as { setProps: (props: AnyObject) => void }).setProps({ layers });
@@ -322,13 +564,14 @@ export default function MapView({
     const Viewport = viewportCtorRef.current;
     const FlyTo = flyToCtorRef.current;
     const container = containerRef.current;
-    if (!deck || !Viewport || !FlyTo || !container || flight.path.length === 0) return;
+    const path = displayPath(flight, ctxRef.current.scenario);
+    if (!deck || !Viewport || !FlyTo || !container || path.length === 0) return;
 
     let minLon = Infinity;
     let minLat = Infinity;
     let maxLon = -Infinity;
     let maxLat = -Infinity;
-    for (const [lon, lat] of flight.path) {
+    for (const [lon, lat] of path) {
       if (lon < minLon) minLon = lon;
       if (lon > maxLon) maxLon = lon;
       if (lat < minLat) minLat = lat;
@@ -408,7 +651,7 @@ export default function MapView({
 
       const [
         { Deck, WebMercatorViewport, FlyToInterpolator },
-        { PathLayer, GeoJsonLayer, TextLayer },
+        { PathLayer, GeoJsonLayer, TextLayer, BitmapLayer, IconLayer },
         { H3HexagonLayer },
         maplibregl,
       ] = await Promise.all([
@@ -425,6 +668,8 @@ export default function MapView({
         GeoJsonLayer: GeoJsonLayer as unknown as new (props: AnyObject) => unknown,
         H3HexagonLayer: H3HexagonLayer as unknown as new (props: AnyObject) => unknown,
         TextLayer: TextLayer as unknown as new (props: AnyObject) => unknown,
+        BitmapLayer: BitmapLayer as unknown as new (props: AnyObject) => unknown,
+        IconLayer: IconLayer as unknown as new (props: AnyObject) => unknown,
       };
       viewportCtorRef.current = WebMercatorViewport as unknown as new (
         props: AnyObject
@@ -469,6 +714,8 @@ export default function MapView({
           GeoJsonLayer as unknown as new (props: AnyObject) => unknown,
           H3HexagonLayer as unknown as new (props: AnyObject) => unknown,
           TextLayer as unknown as new (props: AnyObject) => unknown,
+          BitmapLayer as unknown as new (props: AnyObject) => unknown,
+          IconLayer as unknown as new (props: AnyObject) => unknown,
           ctxRef.current
         ),
         onViewStateChange: (params: AnyObject) => {
@@ -505,7 +752,7 @@ export default function MapView({
     if (!deckRef.current) return;
 
     async function updateLayers() {
-      const [{ PathLayer, GeoJsonLayer, TextLayer }, { H3HexagonLayer }] = await Promise.all([
+      const [{ PathLayer, GeoJsonLayer, TextLayer, BitmapLayer, IconLayer }, { H3HexagonLayer }] = await Promise.all([
         import("@deck.gl/layers"),
         import("@deck.gl/geo-layers"),
       ]);
@@ -517,6 +764,8 @@ export default function MapView({
         GeoJsonLayer as unknown as new (props: AnyObject) => unknown,
         H3HexagonLayer as unknown as new (props: AnyObject) => unknown,
         TextLayer as unknown as new (props: AnyObject) => unknown,
+        BitmapLayer as unknown as new (props: AnyObject) => unknown,
+        IconLayer as unknown as new (props: AnyObject) => unknown,
         ctxRef.current
       );
 
@@ -524,7 +773,30 @@ export default function MapView({
     }
 
     updateLayers();
-  }, [flights, sectors, h3Cells, showSectors, showH3, h3Mode, fuelDomain, scenario, buildLayers]);
+  }, [
+    flights,
+    sectors,
+    h3Cells,
+    showSectors,
+    showH3,
+    h3Mode,
+    fuelDomain,
+    scenario,
+    showWeather,
+    weatherBounds,
+    showAircraft,
+    flightTimes,
+    showPaths,
+    flightExposure,
+    buildLayers,
+  ]);
+
+  // Clock ticks drive aircraft + the weather frame at high frequency, so they
+  // go through the synchronous cached-constructor path (no dynamic import per
+  // frame) rather than the async layer-update effect above.
+  useEffect(() => {
+    refreshLayers();
+  }, [clockMs, weatherFrameUrl, refreshLayers]);
 
   return (
     <div

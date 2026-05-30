@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_ARTIFACTS = Path("data/artifacts")
-DEFAULT_SECTORS = Path("data/hackathon_data_bundle/sectors.geojson")
+DEFAULT_BUNDLE = Path("data/hackathon_data_bundle")
+DEFAULT_SECTORS = DEFAULT_BUNDLE / "sectors.geojson"
 DEFAULT_OUT = Path("frontend/public/data")
 DEFAULT_MAX_FLIGHTS = 1500
 COORD_PRECISION = 3
@@ -156,6 +157,7 @@ def export_snapshot(
     out_root: Path | str = DEFAULT_OUT,
     max_flights: int = DEFAULT_MAX_FLIGHTS,
     fuel_price: float = DEFAULT_FUEL_PRICE_USD_PER_KG,
+    bundle_root: Path | str = DEFAULT_BUNDLE,
 ) -> dict[str, Any]:
     artifacts_dir = Path(artifacts_root) / snapshot
     flights = _read_json(artifacts_dir / "flights.json")
@@ -181,7 +183,18 @@ def export_snapshot(
     Path(out_root).mkdir(parents=True, exist_ok=True)
     (Path(out_root) / "snapshots.json").write_text(json.dumps(manifest))
 
-    return {"snapshot": snapshot, "flights_written": len(web_flights), "out_dir": str(out_dir)}
+    # Time-animation assets (weather radar frames, flight schedule, exposure).
+    # Imported lazily so the core export doesn't hard-depend on numpy/Pillow.
+    from src.web_animation import export_animation
+
+    animation = export_animation(snapshot, web_flights, out_dir, bundle_root)
+
+    return {
+        "snapshot": snapshot,
+        "flights_written": len(web_flights),
+        "out_dir": str(out_dir),
+        "animation": animation,
+    }
 
 
 def main() -> None:
@@ -189,6 +202,8 @@ def main() -> None:
     parser.add_argument("--snapshot", required=True)
     parser.add_argument("--artifacts-root", default=str(DEFAULT_ARTIFACTS))
     parser.add_argument("--sectors", default=str(DEFAULT_SECTORS))
+    parser.add_argument("--bundle", default=str(DEFAULT_BUNDLE),
+                        help="hackathon data bundle root (weather + routes for the animation)")
     parser.add_argument("--out-root", default=str(DEFAULT_OUT))
     parser.add_argument("--max-flights", type=int, default=DEFAULT_MAX_FLIGHTS)
     parser.add_argument("--fuel-price", type=float, default=DEFAULT_FUEL_PRICE_USD_PER_KG,
@@ -201,6 +216,7 @@ def main() -> None:
         out_root=args.out_root,
         max_flights=args.max_flights,
         fuel_price=args.fuel_price,
+        bundle_root=args.bundle,
     )
     print(json.dumps(result, indent=2))
 
