@@ -148,3 +148,65 @@ make backend           # uvicorn on :8000  (set SCENARIO via env/Makefile)
 
 **Next:** Phase 3 — Open-Meteo wind + storm penalties in the pipeline; the
 backend endpoints already carry the richer per-flight fields once `src/` emits them.
+
+---
+
+## Phase 3 — Wind + storms (wind-aware fuel, storm penalty)
+
+**Goal:** make fuel depend on weather — wind via ground speed, plus a storm
+penalty on convectively exposed segments — and surface the new fields through the
+existing artifacts/endpoints. The zero-wind path stays byte-for-byte identical.
+
+**Done:**
+- `src/data/weather.py` — `WeatherGrid`: indexes the `wx/refc|retop/*.npz` strips
+  by `[valid_from, valid_to)`, bisect-selects the strip covering a sample time
+  (nearest fallback), maps lat/lon→cell (`docs/DATA.md`), and reports
+  `exposure(lat, lon, alt, t)` = `refc >= 40 AND alt < retop` with nodata handling.
+  Offline (no network).
+- `src/data/wind.py` — `WindField` (gridded, hourly, per pressure level) with
+  bilinear-in-space / nearest-in-time sampling, pressure level nearest the cruise
+  altitude, and met-direction→(east,north) conversion. `fetch_wind_field` pulls a
+  coarse CONUS grid from Open-Meteo (`wind_speed_unit=kn`, 200/250 hPa);
+  `load_or_fetch_wind` caches to `wind_cache.npz` and returns `None` on any failure
+  so the build cleanly degrades to zero-wind.
+- `src/algorithm/fuel.py` — `estimate_fuel(flight, wind=None, weather=None)` now
+  integrates per segment: `GS = max(TAS + along_track_wind, 150)` (floor only on
+  the wind path), storm penalty = `+15%` fuel on exposed segments. New
+  `FuelEstimate` fields: `base_fuel_kg`, `headwind_nm`, `tailwind_nm`,
+  `mean_along_track_kt`, `storm_nm`, `max_refc_dbz`, `storm_penalty_kg` — all
+  defaulted so the no-arg call is unchanged.
+- `src/build.py` — storms **on by default** (offline), winds **opt-in**
+  (`--wind` / `AIRFLOW_WIND=1`, cached). Enriched `flights.json` + new `summary`
+  totals (`total_base_fuel_kg`, `wind_delta_fuel_kg`, `total_storm_nm`,
+  `n_storm_flights`, `total_storm_penalty_kg`, `wind_enabled`, `storms_enabled`).
+- `Makefile` — added `build-wind`; `.env.example` notes `AIRFLOW_WIND`. Updated
+  `docs/API.md` flight/summary schemas.
+- Tests (+18): `tests/test_wind.py` (11) and `tests/test_weather.py` (8) — all
+  offline (HTTP mocked / hand-built fields).
+
+**Verified:**
+- `make test` → **51 passed** (~17s).
+- Build (storms only, offline, full scenario): 361 storm-exposed flights,
+  15,903 nm storm distance, +13,503 kg penalty; `total_base_fuel_kg` =
+  63,193,079.2 — **identical to Phase 1**, confirming the zero-wind path is intact.
+  Example: UAL285 KIAH→KLAX @34k ft, 417 nm in storm, max 52.8 dBZ, +335.6 kg.
+- Build with `--wind`: live Open-Meteo fetch succeeded (5×9 grid × 48 h × 200/250
+  hPa; sample @(40,-100) 34k ft → u=+47.8 kt eastward, realistic jet aloft);
+  `wind_delta_fuel_kg` = +451,710 kg. Rebuild loads `wind_cache.npz` (2 min → 20 s,
+  no network, identical totals).
+
+**Limitations / deferred:**
+- Storm penalty is a flat +15% on exposed segments (a proxy, not a routed detour);
+  lateral reroutes are Phase 5.
+- `WeatherGrid` (src) and `backend/bundle.py` parse strips independently; a future
+  cleanup could share one implementation.
+
+**Run it:**
+```
+make build             # storms on, zero-wind (offline, deterministic)
+make build-wind        # also fetch + cache Open-Meteo winds (network on first run)
+```
+
+**Next:** Phase 4 — real H3 aggregation (`src/algorithm/h3agg.py`) + sector
+occupancy (`src/algorithm/sectors.py`); the `/api/h3` and sector `load` endpoints
+light up once those artifacts exist.

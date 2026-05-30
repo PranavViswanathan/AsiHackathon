@@ -36,12 +36,26 @@ All flights in the active scenario with their baseline fuel estimate.
     "distance_nm": 2143.5,
     "time_hr": 4.66,
     "fuel_kg": 11650.0,
-    "co2_kg": 36814.0
+    "co2_kg": 36814.0,
+    "base_fuel_kg": 11540.0,
+    "headwind_nm": 820.0,
+    "tailwind_nm": 1323.5,
+    "mean_along_track_kt": 14.2,
+    "storm_nm": 0.0,
+    "max_refc_dbz": 0.0,
+    "storm_penalty_kg": 0.0
   }
 ]
 ```
 
 `id` = `"{flight_number}_{take_off_time}_{origin_airport_icao}"`.
+
+The Phase 3 fields: `base_fuel_kg` is the zero-wind, no-storm reference;
+`headwind_nm`/`tailwind_nm` split the route by along-track wind sign;
+`mean_along_track_kt` is the distance-weighted along-track wind (+ = tailwind);
+`storm_nm`/`max_refc_dbz`/`storm_penalty_kg` describe convective exposure. When
+the build runs zero-wind (the default for the backend), the wind fields are 0 and
+`fuel_kg` = `base_fuel_kg` + `storm_penalty_kg`.
 
 ## GET /api/flight/{id}
 
@@ -63,12 +77,24 @@ Scenario totals (builds artifacts on first call).
   "snapshot": "asked_at_2025-05-29T21:00:00Z",
   "asked_at": "2025-05-29T21:00:00+00:00",
   "n_flights": 16687,
-  "total_fuel_kg": 63193079.2,
-  "total_co2_kg": 199690130.1,
+  "wind_enabled": false,
+  "storms_enabled": true,
+  "total_fuel_kg": 63206582.6,
+  "total_base_fuel_kg": 63193079.2,
+  "wind_delta_fuel_kg": 0.0,
+  "total_co2_kg": 199732801.0,
   "total_distance_nm": 11478388.6,
+  "total_storm_nm": 15903.0,
+  "n_storm_flights": 361,
+  "total_storm_penalty_kg": 13503.4,
   "by_class": { "narrowbody": 13248, "regional": 3189, "widebody": 250 }
 }
 ```
+
+`total_base_fuel_kg` is the zero-wind / no-storm total; `wind_delta_fuel_kg` is
+the net fuel change from wind alone (0 when winds are disabled). With
+`AIRFLOW_WIND=1` / `make build-wind`, `wind_enabled` is `true` and the wind delta
+is populated.
 
 ## POST /api/solve
 
