@@ -48,6 +48,7 @@ def root() -> dict:
             "/api/flights",
             "/api/flight/{id}",
             "/api/h3",
+            "/api/recommendations",
             "/api/summary",
             "/api/solve",
             "/api/sectors",

@@ -268,6 +268,64 @@ through `POST /api/solve` and a baseline/optimized summary.
 
 ---
 
+## Phase 5 — Optimizer (altitude pass + capacity repair)
+
+**Goal:** turn the pipeline from *observe/explain* into *recommend/compare* — a
+staged, explainable optimizer that produces a recommended scenario with a
+baseline↔optimized delta, wired through the artifacts and API.
+
+**Done:**
+- `src/algorithm/sectors.py` refactor — extracted reusable `load_bands`,
+  `capacity_map`, `n_bins_for`, `compute_occupancy` (now returns per-flight
+  membership + accepts altitude/takeoff overrides), `overloaded_keys`,
+  `format_sectors`. `aggregate_sectors` output is unchanged.
+- `src/algorithm/optimize.py` — two greedy passes:
+  1. **Altitude pass:** try ±2,000/4,000 ft, keep the lowest-fuel level (clears
+     storm echo-tops; with winds on, also catches better winds — all flights
+     considered then, else only storm-exposed).
+  2. **Departure-time capacity repair:** for flights in over-demand sector-time
+     bins, try ±5/10/15 min shifts and apply the one that most reduces total
+     over-demand (greedy, biggest contributors first, incremental occupancy
+     update). Every change records before/after + a human-readable reason.
+- `src/build.py` — sectors + optimizer share one baseline occupancy computation;
+  writes `recommendations.json`, enriches `flights.json` with
+  `opt_fuel_kg`/`opt_cruise_altitude_ft`/`opt_departure_shift_min`/`fuel_saved_kg`/
+  `recommended`, and adds an `optimization` block to the summary. Optimizer on by
+  default; `--no-optimize` to skip.
+- Backend — new `GET /api/recommendations`; `/api/flights` carries the `opt_*`
+  fields; `/api/summary` + `POST /api/solve` carry the `optimization` roll-up.
+- Updated `docs/API.md`; tests (+5): `tests/test_optimize.py`.
+
+**Verified:**
+- `make test` → **65 passed** (~58s — the optimizer now runs in each `test_build`).
+- Full offline build (~18s): **overloaded sectors 169 → 46**; 66 altitude climbs
+  (storm clearance), 3,670 departure shifts; 3,723 recommendations. Example:
+  AAY1271 climbs 37k→39k to overfly a storm top (−32.3 kg, storm 38.6→0 nm).
+  `total_base_fuel_kg` still 63,193,079.2 — Phase 1 invariant holds.
+- Backend smoke test: `/api/recommendations` → 3,723; `/api/flights` recommended
+  flights carry `opt_*`; `/api/summary` + `/api/solve` include `optimization`.
+
+**Limitations / deferred:**
+- Fuel savings are modest without winds (the only fuel lever offline is storm
+  echo-top clearance); run `make build-wind` for wind-optimal altitudes and a
+  larger `fuel_saved_kg`.
+- Capacity repair is departure-time only (no lateral reroute); each flight is
+  moved at most once in a single greedy pass. Departure shifts are treated as
+  fuel-neutral.
+- Altitude candidates may cross the HIGH/LOW band; the optimized occupancy is
+  recomputed with the new altitude so the before/after stays consistent.
+
+**Run it:**
+```
+make build             # storms + h3 + sectors + optimizer (offline)
+make build-wind        # also wind-optimal altitudes (network on first run)
+```
+
+**Next:** frontend — Next.js + deck.gl/MapLibre map, flight detail panel, and the
+baseline/optimized toggle over these artifacts (`docs/FRONTEND.md`).
+
+---
+
 ## Frontend slice — static-data UI, API-ready
 
 **Goal:** build the `frontend/` app reading static JSON now, designed to swap to
@@ -306,8 +364,8 @@ the live API later by changing one env var. deck.gl + MapLibre (2D) and Three.js
 - H3 layer renders empty until the pipeline H3 artifact is wired into the export
   (`export_web.py` still emits `h3_fuel.json` as `[]`; Phase 4 now produces real
   `h3.json`).
-- Only the baseline scenario exists; `recommended` toggle is inert until the
-  optimizer (Phase 5) emits `flights_recommended.json`.
+- Only the baseline scenario exists; the `recommended` toggle goes live once the
+  export passes through the Phase 5 `opt_*` fields / `flights_recommended.json`.
 - Static flights are downsampled to 1,500 for browser performance.
 - deck.gl 9.x layer constructors needed `unknown` casts under the SSR
   dynamic-import pattern (noted by the builder).

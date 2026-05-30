@@ -45,6 +45,11 @@ def get_h3() -> list[dict]:
     return get_store().h3()
 
 
+@router.get("/recommendations")
+def get_recommendations() -> list[dict]:
+    return get_store().recommendations()
+
+
 @router.get("/summary")
 def get_summary() -> dict:
     return get_store().ensure_built()

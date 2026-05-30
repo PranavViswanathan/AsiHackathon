@@ -10,10 +10,10 @@ Routes are grouped into routers under `backend/routers/`. CORS is opened to
 `FRONTEND_URL`. All payloads are JSON. Base path: `/api` (except `/health` and
 `/`).
 
-> **Status:** flight fuel estimates, the scenario summary, the H3 energy heatmap,
-> sector occupancy (load + over-demand), and weather are all live.
-> `POST /api/solve` currently (re)runs the pipeline; the optimizer knobs are
-> reserved for Phase 5.
+> **Status:** all phases are live — flight fuel estimates, the H3 energy heatmap,
+> sector occupancy (load + over-demand), weather, and the optimizer (per-flight
+> recommendations + baseline/optimized summary). `POST /api/solve` (re)runs the
+> full pipeline incl. the optimizer; the `lambda_*` knobs are reserved for tuning.
 
 ## GET /api/flights
 
@@ -42,12 +42,22 @@ All flights in the active scenario with their baseline fuel estimate.
     "mean_along_track_kt": 14.2,
     "storm_nm": 0.0,
     "max_refc_dbz": 0.0,
-    "storm_penalty_kg": 0.0
+    "storm_penalty_kg": 0.0,
+    "opt_fuel_kg": 11617.7,
+    "opt_cruise_altitude_ft": 39000.0,
+    "opt_departure_shift_min": 0,
+    "fuel_saved_kg": 32.3,
+    "recommended": true
   }
 ]
 ```
 
 `id` = `"{flight_number}_{take_off_time}_{origin_airport_icao}"`.
+
+The `opt_*` / `fuel_saved_kg` / `recommended` fields describe the optimizer's
+recommended scenario for this flight (Phase 5): the optimized cruise altitude,
+any departure-time shift in minutes, the resulting fuel, and whether the flight
+was changed. The frontend's baseline/optimized toggle reads these.
 
 The Phase 3 fields: `base_fuel_kg` is the zero-wind, no-storm reference;
 `headwind_nm`/`tailwind_nm` split the route by along-track wind sign;
@@ -76,6 +86,33 @@ Each flight's fuel is spread across the cells its route crosses (proportional to
 in-cell distance). `congestion` is traffic density normalised to `[0, 1]`
 (cell flight count / busiest cell). Resolution is H3 level 4.
 
+## GET /api/recommendations
+
+The optimizer's per-flight changes (only flights that were changed).
+
+```json
+[
+  {
+    "flight_id": "AAY1271_2025-05-29T20:16:00+00:00_KLIT",
+    "altitude": { "from": 37000.0, "to": 39000.0 },
+    "departure_shift_min": 0,
+    "before": { "fuel_kg": 4147.0, "cruise_altitude_ft": 37000.0, "storm_nm": 38.6 },
+    "after":  { "fuel_kg": 4114.8, "cruise_altitude_ft": 39000.0, "storm_nm": 0.0 },
+    "fuel_saved_kg": 32.3,
+    "reason": "climb/descend to 39000 ft to overfly the storm top"
+  },
+  {
+    "flight_id": "N6057S_2025-05-29T19:58:00+00:00_KJSO",
+    "altitude": null,
+    "departure_shift_min": -15,
+    "reason": "shift departure by -15 min to relieve an overloaded sector"
+  }
+]
+```
+
+`altitude` is `null` for a pure departure-time change. Each entry carries a
+human-readable `reason`. The roll-up lives in `summary.optimization`.
+
 ## GET /api/summary
 
 Scenario totals (builds artifacts on first call).
@@ -97,9 +134,22 @@ Scenario totals (builds artifacts on first call).
   "total_storm_penalty_kg": 13503.4,
   "n_h3_cells": 4841,
   "n_overloaded_sectors": 169,
+  "optimization": {
+    "baseline_fuel_kg": 63206582.6,
+    "optimized_fuel_kg": 63204760.1,
+    "fuel_saved_kg": 1822.5,
+    "fuel_saved_pct": 0.003,
+    "n_altitude_changes": 66,
+    "n_departure_changes": 3670,
+    "overloaded_sectors_before": 169,
+    "overloaded_sectors_after": 46
+  },
   "by_class": { "narrowbody": 13248, "regional": 3189, "widebody": 250 }
 }
 ```
+
+`optimization` is the before/after roll-up from the Phase 5 optimizer (`null`
+when the build is run with `--no-optimize`).
 
 `total_base_fuel_kg` is the zero-wind / no-storm total; `wind_delta_fuel_kg` is
 the net fuel change from wind alone (0 when winds are disabled). With

@@ -54,6 +54,9 @@ class ArtifactStore:
     def sector_occupancy(self) -> dict:
         return self._load("sectors.json")  # type: ignore[return-value]
 
+    def recommendations(self) -> list[dict]:
+        return self._load("recommendations.json")  # type: ignore[return-value]
+
     def flight(self, flight_id: str) -> dict | None:
         return next((f for f in self.flights() if f["id"] == flight_id), None)
 
