@@ -1,8 +1,10 @@
 __pycache__/
 *.pyc
 .env
+.env*.local
 node_modules/
 .next/
+*.tsbuildinfo
 *.npz
 *.gz
 data/hackathon_data_bundle/
