@@ -10,3 +10,4 @@ data/hackathon_data_bundle/
 data/artifacts/
 frontend/public/data/
 .pytest_cache/
+.DS_Store
