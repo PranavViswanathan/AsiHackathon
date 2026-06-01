@@ -8,6 +8,9 @@ AirFlow takes a point-in-time snapshot of US air traffic (~16,687 flights), esti
 
 The decision loop is: observe (what is happening) -> explain (why a flight is costly or risky) -> recommend (a small set of changes) -> compare (before vs after).
 
+<img width="1680" height="962" alt="image" src="https://github.com/user-attachments/assets/26f170ec-4f9b-4bd0-8529-80ce196698e7" />
+
+
 ## Docs
 
 - [Architecture](docs/ARCHITECTURE.md) - system design and data flow
