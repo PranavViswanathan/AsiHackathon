@@ -1,115 +1,135 @@
 # Architecture
 
-AirFlow is a four-stage pipeline: ingest raw scenario data, discretize the
-airspace into a space-time grid, solve for sector-load-aware routes, then serve
-and visualize the result. Each stage has a single responsibility and a clean
-data contract with the next, so any stage can be tested or swapped in isolation.
+AirFlow is an offline precompute pipeline plus two serving paths. The pipeline
+turns a raw scenario into a set of JSON artifacts (per-flight fuel, an H3 energy
+heatmap, sector occupancy, and optimizer recommendations). Those artifacts are
+served two ways: exported as lean static JSON the frontend reads directly, and
+served live by a FastAPI backend. Precomputing keeps the demo fast and robust
+(no live solve required), while the API path exists for querying the full
+dataset. Each stage has a single responsibility and a clean data contract with
+the next.
 
 ## Data Flow
 
 ```
-routes.json + sectors.geojson + wx/*.npz
+routes.json + sectors.geojson + wx/{refc,retop}/*.npz   (+ Open-Meteo winds, cached)
         |
-src/data/ingest.py        (parse flights, sectors, weather)
+src/data/ingest.py      parse flights / scenario
+src/data/wind.py        WindField: fetch + cache CONUS winds aloft, along-track lookup
+src/data/weather.py     WeatherGrid: refc/retop strips, storm-exposure test
         |
-src/data/weather.py       (WeatherGrid — spatial/temporal lookups)
+src/algorithm/grid.py     great-circle distance + bearing
+src/algorithm/fuel.py     OpenAP fuel-burn estimate (wind + storm aware)
+src/algorithm/sectors.py  sector occupancy per (sector, time bin) vs capacity
+src/algorithm/h3agg.py    densify routes -> H3 cells -> fuel/traffic per cell
+src/algorithm/optimize.py staged optimizer (altitude + A* reroute + departure shift)
+src/algorithm/astar.py    lateral storm reroute (minimum-fuel, storm cells forbidden)
         |
-src/algorithm/grid.py     (lat/lon <-> grid cell mapping)
+src/build.py            orchestrate -> data/artifacts/<snapshot>/
+                          flights.json, summary.json, h3.json, sectors.json,
+                          recommendations.json, wind_cache.npz
         |
-src/algorithm/solver.py   (sector-load-aware iterative Dijkstra)
+        +--> src/export_web.py    lean static JSON -> frontend/public/data/<snapshot>/
+        |    src/web_animation.py weather radar frames (PNG) for the timeline
         |
-backend/main.py           (FastAPI REST API)
+        +--> backend/ (FastAPI)   serves the artifacts + sectors/weather over HTTP
         |
-frontend/                 (Next.js + Three.js 3D CONUS view)
+frontend/   Next.js: deck.gl + MapLibre (2D), Three.js (3D), timeline animation
 ```
 
-The raw inputs are static files on disk. Ingestion turns them into typed,
-in-memory structures. The weather layer wraps the stack of forecast grids
-behind a query interface. The grid module defines the coordinate system the
-solver reasons in. The solver produces trajectories and a sector-load history.
-The backend exposes that result over HTTP, and the frontend renders it.
+The frontend reads through a swappable data layer (`frontend/src/lib/data/`): it
+defaults to the static files and can flip to the API by setting one env var. See
+[FRONTEND.md](FRONTEND.md).
 
 ## Component Responsibilities
 
-**src/data/ingest.py** — Parses the three input artifacts into typed Python
-structures. Reads `routes.json` into a list of flight records (origin,
-destination, cruise altitude/speed, takeoff/landing times, and the lat/lon
-waypoint polyline). Loads `sectors.geojson` into Shapely polygons tagged with
-altitude band and capacity. Discovers the `wx/refc` and `wx/retop` `.npz` strips
-and hands their file index to the weather layer. This module is the only place
-that touches the raw file formats; everything downstream consumes its output.
+**src/data/ingest.py** - Parses `routes.json[.gz]` into frozen `Flight` records
+(origin/destination, cruise altitude and speed, takeoff/landing times, lat/lon
+waypoint polyline, airborne flag) and a `Scenario`. The only place that touches
+the routes file format.
 
-**src/data/weather.py** — Wraps the forecast grids in a `WeatherGrid` object
-that answers "what is the reflectivity / storm top at this lat, lon, and time?".
-It owns the pixel-to-geographic coordinate transform and the temporal nearest-
-neighbor selection across the 15-minute strips. Lazily loads `.npz` matrices so
-the full day of weather never has to sit in memory at once. The solver depends
-only on this query surface, not on the file layout.
+**src/data/wind.py** - `WindField` wraps a coarse CONUS grid of winds aloft per
+pressure level. `fetch_wind_field` pulls it once per snapshot from Open-Meteo and
+`load_or_fetch_wind` caches it to `wind_cache.npz`, returning `None` on any
+failure so the build degrades cleanly to zero-wind. `along_track_kt` projects the
+wind onto a segment's heading (+ tailwind, - headwind).
 
-**src/algorithm/grid.py** — Defines the discrete space-time grid the solver
-operates on: the lat/lon binning, the HIGH/LOW altitude bands, and the 15-minute
-time bins. Provides bidirectional mapping between continuous (lat, lon, alt,
-time) coordinates and discrete grid cells, plus the neighbor topology used to
-build the routing graph. This is the shared coordinate vocabulary between the
-geographic world and the optimizer.
+**src/data/weather.py** - `WeatherGrid` indexes the `wx/refc` and `wx/retop`
+15-minute strips, selects the strip covering a sample time, maps lat/lon to a
+grid cell, and answers `exposure(lat, lon, alt, t)` = `refc >= 40 dBZ AND
+alt < retop`. Fully offline.
 
-**src/algorithm/solver.py** — The core optimizer. Builds a weighted graph over
-grid cells and runs iterative Dijkstra: each iteration routes every flight along
-the current cheapest path, accumulates the resulting per-sector load, then
-re-weights the graph so that over-demand sectors and dangerous weather become
-expensive. Repeating this drives flights off congested sectors and around
-storms while keeping total path deviation small. Emits final trajectories, the
-per-timestep sector-load map, and a convergence history.
+**src/algorithm/grid.py** - Great-circle distance (`haversine_nm`), initial
+bearing, and route length. The shared geographic vocabulary.
 
-**backend/main.py + routers/** — A FastAPI application that loads a scenario,
-invokes the solver on demand, and serves the result. `routers/routing.py`
-exposes the solve endpoint and flight list, `routers/sectors.py` exposes sector
-geometry and load, and `routers/weather.py` exposes the forecast grids for a
-requested time window. CORS is opened to `FRONTEND_URL`.
+**src/algorithm/fuel.py** - The fuel-burn model. Classifies each flight
+(regional/narrowbody/widebody), gets an altitude-aware cruise fuel flow from
+OpenAP for a representative type, and integrates fuel over route segments using a
+wind-adjusted ground speed plus a storm-exposure penalty. Emits a `FuelEstimate`
+(fuel, CO2, time, headwind/tailwind split, storm exposure). See
+[ALGORITHM.md](ALGORITHM.md).
 
-**frontend/** — A Next.js + Three.js application. The hero is a 3D CONUS view
-with sectors shaded by load, animated flight paths, and a weather overlay. A
-control panel drives scenario selection and the solver's cost weights; charts
-below show convergence. It is a pure consumer of the backend API.
+**src/algorithm/sectors.py** - Builds a time-parameterized track per flight,
+samples it, and counts distinct flights per (sector, time bin) by HIGH/LOW band
+via a Shapely STRtree. Emits peak load, over-demand flags, and per-bin load.
+
+**src/algorithm/h3agg.py** - Densifies each route, bins points to H3 cells
+(resolution 4), spreads each flight's fuel across the cells it crosses, and
+aggregates fuel, flight count, mean, and a congestion ratio per cell.
+
+**src/algorithm/optimize.py + astar.py** - The staged optimizer: an altitude
+pass (storm clearance first, then better winds/efficiency), an A* lateral reroute
+for flights no altitude can clear, and a greedy departure-time pass to relieve
+over-demand sectors. Produces an optimized `FuelEstimate`, recommendations, and a
+baseline vs optimized summary.
+
+**src/build.py** - Orchestrates the pipeline for one scenario and writes the
+artifacts. Storms are on by default (offline); winds are opt-in via `--wind`
+(`AIRFLOW_WIND=1`), optimizer on by default (`--no-optimize` to skip).
+
+**src/export_web.py / src/web_animation.py** - `export_web` writes a lean,
+downsampled, browser-friendly copy of the artifacts (paths as `[lon,lat]`,
+per-flight cost in USD, H3 fuel/traffic files, sectors with occupancy) into
+`frontend/public/data/`. `web_animation` renders the weather radar PNG frames for
+the timeline.
+
+**backend/** - FastAPI app (`main.py`) serving the artifacts (`store.py`) and
+reading sectors + weather from the bundle (`bundle.py`); config from env
+(`config.py`). Endpoints in [API.md](API.md). CORS open to `FRONTEND_URL`.
+
+**frontend/** - Next.js + TypeScript app. deck.gl + MapLibre 2D map (flights by
+fuel, H3 heatmap, sectors, animated radar + flight playback), a Three.js 3D view,
+filters, a flight detail panel, and a baseline/optimized savings panel. Pure
+consumer of the data layer.
 
 ## Key Design Decisions
 
-**Why iterative Dijkstra.** The true problem — route every flight so that no
-sector ever exceeds capacity — is a coupled combinatorial optimization: each
-flight's best route depends on where every other flight goes. Solving that
-jointly and exactly is intractable at 16,687 flights. Iterative Dijkstra is a
-fixed-point relaxation: route each flight independently against a shared,
-congestion-priced graph, observe the resulting loads, raise prices on
-over-demand sectors, and repeat. It is fast (each iteration is N independent
-shortest-path queries), it degrades gracefully (any iteration is a valid
-solution), and it converges toward a load-balanced equilibrium without ever
-materializing the full joint search space.
+**Precompute to artifacts, serve two ways.** The expensive work (fuel, sectors,
+H3, optimization) runs once in `build.py` and is frozen as JSON. The static
+export makes the demo instant and dependency-free; the FastAPI path serves the
+same data for querying. The recommendation/fuel logic lives in importable
+functions so both paths and `POST /api/solve` share one implementation.
 
-**Why sector-based cost.** Capacity is defined per sector, not per grid cell, so
-the cost that discourages congestion must be charged at sector granularity. We
-price a cell by the load of the sector containing it, using a superlinear term
-(`load^2`) so that the marginal cost of adding the Nth flight to an already-busy
-sector grows sharply. This makes the solver prefer to spread flights across many
-lightly loaded sectors rather than pile them into one, which is exactly the
-load-balancing objective.
+**Fuel as a relative proxy.** The bundle has no tail number or mass, so absolute
+fuel is an estimate. We read it primarily through before/after deltas, where a
+constant bias cancels. OpenAP gives an altitude-dependent burn rate, which is
+what makes "climb to a better level" a genuine fuel lever.
 
-**Why 15-minute time bins.** The weather forecasts are delivered as 15-minute
-strips, so 15 minutes is the natural temporal resolution of the most dynamic
-input. Binning sector occupancy to the same cadence lets a sector be over-demand
-at 21:00 but fine at 21:15, which is how real ATC flow control thinks. Finer
-bins would multiply graph size without adding information the weather can
-support; coarser bins would smear away transient congestion peaks that are the
-whole point of the optimization.
+**Soft cost, hard constraint for weather.** Storm exposure adds a fuel penalty
+(soft) but is also a hard constraint the optimizer must reduce first, via
+altitude and then an A* detour that treats storm cells as impassable. Capacity is
+the other constraint, relieved by departure-time shifts.
+
+**Staged greedy optimizer, not a monolith.** Altitude -> reroute -> capacity
+repair, each bounded and explainable, so every change carries a human-readable
+reason and the result is legible rather than a black box.
 
 ## Scaling Considerations
 
-The dominant cost is 16,687 shortest-path solves per iteration. We keep this
-tractable by: (1) routing on a coarse lat/lon grid rather than raw waypoints, so
-each Dijkstra runs on a graph of bounded size; (2) lazily loading weather strips
-and caching the active window, so memory stays flat across the day; (3) keeping
-each flight's solve independent within an iteration, which makes the inner loop
-trivially parallelizable across processes if needed; and (4) bounding iteration
-count (typically 5–15) since the load distribution stabilizes quickly. The
-sector-load accumulation is an O(path length) scatter per flight, negligible
-next to the path search. For the demo we can also cap `n_flights` to route a
-representative subset and still surface the same congestion story.
+The dominant cost is per-flight work over 16,687 flights: a fuel integration and,
+in the optimizer, a few candidate altitudes and (for storm-exposed flights) an A*
+search on a coarsened (~50 NM) grid confined to each flight's origin-destination
+corridor. OpenAP fuel-flow lookups are memoized. Winds are fetched once and
+cached. The static export downsamples to the top flights by fuel and rounds
+coordinates so browser payloads stay small, while the full dataset remains
+available through the pipeline and the API.

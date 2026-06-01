@@ -1,74 +1,94 @@
 # Frontend
 
-The frontend is a Next.js 14 + TypeScript app styled with Tailwind CSS. Its job
-is to make the optimization legible: show where airspace is congested, watch
-flights reroute, and let the operator tune the cost weights and re-run. The 3D
-CONUS view is the hero; everything else supports it.
+A Next.js 14 + TypeScript app styled with Tailwind CSS. Its job is to make the
+optimization legible: show where fuel is burned and airspace is loaded, animate
+weather and flights over time, let the operator filter and inspect flights, and
+compare baseline vs the optimized scenario. The deck.gl + MapLibre 2D map is the
+primary view; a Three.js 3D view is an alternative.
+
+## Data layer (static now, API-ready)
+
+Components never fetch directly. All data access goes through a single interface
+(`src/lib/data/`):
+
+- `DataSource.ts` - the interface (`getFlights`, `getSectors`, `getH3`,
+  `getSummary`, `getSnapshots`, plus `getSectorLoad`/`getWeather`).
+- `StaticDataSource.ts` - reads `/data/<snapshot>/*.json` from `public/`.
+- `ApiDataSource.ts` - hits the FastAPI endpoints.
+- `index.ts` - `getDataSource()` returns the API impl when
+  `NEXT_PUBLIC_DATA_SOURCE=api`, else the static impl (default).
+
+Switching from the bundled static JSON to the live backend is a one env-var
+change. The default is `static`, which is the demo-safe path; the static files
+are produced by `src/export_web.py` in the exact shape these types expect.
 
 ## Page Layout
 
-A single dashboard, three stacked regions:
+A single dashboard:
 
 ```
-+--------------------------------------------------+
-|  ControlPanel  (scenario, lambdas, iters, Run)   |
-+--------------------------------------------------+
-|                                                  |
-|              Scene3D  (hero, center)             |
-|        3D CONUS — sectors, flights, weather      |
-|                                                  |
-+--------------------------------------------------+
-|  ConvergenceChart        |   SectorMap (2D)      |
-+--------------------------------------------------+
++--------------------------------------------------------------+
+|  SummaryHeader  (flights, fuel, CO2, distance, $ saved)      |
++-----------+--------------------------------------+-----------+
+| Control   |                                      |  Detail   |
+| + Filter  |        MapView (2D) or Scene3D       |  + Savings|
+| panels    |        + TimelineControl             |  panels   |
++-----------+--------------------------------------+-----------+
 ```
 
-- **Top:** `ControlPanel` — the inputs and the Run button.
-- **Center:** `Scene3D` — the main visualization, given the most vertical space.
-- **Bottom:** charts and the 2D companion view.
+## Components
 
-## Scene3D
+**MapView** (`deck.gl` + `MapLibre`, the hero) - a MapLibre CARTO dark basemap
+with deck.gl layers on top:
+- `PathLayer` of flights, colored by fuel via a data-driven turbo scale (see
+  `lib/fuelColor.ts`); pickable, click selects a flight.
+- `GeoJsonLayer` of US state boundaries (white) for geographic context.
+- `H3HexagonLayer` energy heatmap (toggle), colored by the H3 value.
+- `GeoJsonLayer` of sectors (toggle), filled and colored by over-demand.
+- Animated weather radar frames and flight playback driven by the timeline.
+- `getTooltip` popups: hover a sector (peak load vs capacity, over-demand,
+  altitude band), an H3 cell (fuel, flights, mean, congestion), or a flight.
 
-The centerpiece, built with Three.js via `@react-three/fiber` and
-`@react-three/drei`.
+**Scene3D** (`react-three-fiber` + `drei`) - a 3D view of the same flights, each
+path lifted to its cruise altitude, with a ground grid and orbit controls. Down-
+samples for framerate.
 
-- **CONUS map** — the continental US rendered as a base plane / extruded
-  geometry under the airspace, giving geographic context.
-- **Sectors** — each sector drawn from its `sectors.geojson` polygon, extruded to
-  its altitude band (HIGH stacked above LOW). Color encodes load relative to
-  capacity: **green** (well under), **yellow** (near capacity), **red** (over-
-  demand). This is the at-a-glance read on where the airspace is stressed.
-- **Flight paths** — optimized trajectories drawn as lines, with **moving
-  spheres** animating along each path over the scenario timeline to convey flow
-  and density.
-- **Weather overlay** — `refc`/`retop` rendered as semi-transparent **fog /
-  cloud** volumes over the affected regions, so the viewer can see flights bend
-  around storms.
-- **Orbit controls** — click-drag to rotate, scroll to zoom, to inspect
-  congestion from any angle.
+**TimelineControl** - scrubs/plays the scenario clock, advancing the weather
+radar frame and animating flights along their routes (`lib/flightAnim.ts`,
+`lib/weather.ts`, `lib/planeIcon.ts`).
 
-## ControlPanel
+**ControlPanel** - 2D/3D toggle; layer toggles (sectors, H3); an H3 fuel/traffic
+mode toggle with its legend; a baseline/optimized scenario toggle; and the flight
+fuel-color legend (real turbo gradient with the live domain labels).
 
-The input surface across the top:
+**FilterPanel** - filter the rendered flights by airline / flight-number search
+(with suggestions), aircraft class, airborne status, origin, and destination.
+Shows the match count; filtering applies to both the 2D and 3D views.
 
-- **Scenario picker** — dropdown of the 11 available scenarios; selecting one
-  loads its flights and weather.
-- **Lambda sliders** — `lambda_sector` and `lambda_weather`, the two cost-
-  function weights, so the operator can trade congestion relief and weather
-  margin against delay.
-- **Iteration count** — number of iterative-Dijkstra passes to run.
-- **Run button** — fires `POST /api/solve` with the current settings and streams
-  the result into the visualization.
+**DetailPanel** - the selected flight: number, origin to destination, altitude,
+distance (NM), fuel and class, airborne status, and, when it has a recommended
+change, the altitude/departure delta with fuel, CO2, and dollars saved.
 
-## SectorMap
+**SavingsPanel** - the optimizer roll-up: dollars saved (headline), fuel and CO2
+saved, a baseline vs optimized fuel bar chart (Recharts, axis zoomed to the few-
+percent gap so it is visible), and over-demand sectors before to after.
 
-A 2D overhead (top-down) view of the sectors as a companion/fallback to the 3D
-scene. Same green/yellow/red load coloring, but flat and always readable
-regardless of camera state — useful for precisely identifying which sectors are
-over-demand and for environments where the 3D view is heavy.
+**SummaryHeader** - snapshot totals: flights, fuel, CO2, distance, and dollars
+saved.
 
-## ConvergenceChart
+## Color scales
 
-A line chart of **sector over-demand count per iteration**, sourced from the
-solve response's `history`. It is the proof that the optimizer is working: the
-curve should descend toward zero as iterations progress, telling the story of
-congestion being designed out of the airspace.
+- **Flights**: a turbo scale whose domain is computed from the loaded flights
+  (min to the 95th percentile), so the spectrum spreads across the bulk (blue at
+  the low end, red at the top); the top few percent clamp to red.
+- **H3**: a yellow to red heat scale normalized to the busiest cell, where yellow
+  is low energy/traffic and red is a hotspot.
+
+## Notes
+
+- MapView and Scene3D are client-only, imported via `next/dynamic` with
+  `{ ssr: false }` (deck.gl, MapLibre, and three are not SSR-safe).
+- The H3 heatmap is a full-snapshot aggregate and does not shrink when flights
+  are filtered.
+- If the dev server throws a stale-chunk error after big changes, clear the cache
+  with `rm -rf frontend/.next` and restart.
