@@ -115,3 +115,38 @@ asked_at_2026-04-08T18:00:00Z
 
 Select a scenario by pointing `SCENARIO_DIR` at one of these directories (see
 `.env.example`).
+
+## Generated Artifacts
+
+`src/build.py` writes per-snapshot artifacts to `data/artifacts/<snapshot>/`
+(gitignored; regenerable). These are the pipeline's output contract.
+
+| File | Shape | Contents |
+| --- | --- | --- |
+| `flights.json` | list | per-flight `FuelEstimate` fields (`fuel_kg`, `co2_kg`, `distance_nm`, `time_hr`, `aircraft_class`, `aircraft_type`, `fuel_flow_kg_hr`, headwind/tailwind, `storm_nm`, `max_refc_dbz`) plus optimizer fields (`opt_fuel_kg`, `opt_cruise_altitude_ft`, `opt_departure_shift_min`, `fuel_saved_kg`, `recommended`) |
+| `summary.json` | object | totals + `optimization` block (baseline/optimized fuel, fuel saved + pct, sector and storm counts) |
+| `h3.json` | list | `{h3, fuel_kg, n_flights, mean_kg, congestion}` per H3 cell (res 4) |
+| `sectors.json` | object | per-sector `{band, capacity, peak_load, over_demand, by_bin}` keyed by name |
+| `recommendations.json` | list | `{flight_id, reason, before, after, ...}` for each changed flight |
+| `wind_cache.npz` | npz | cached Open-Meteo CONUS wind field (only when built with `--wind`) |
+
+## Web Export
+
+`src/export_web.py` writes a lean, browser-ready copy to
+`frontend/public/data/<snapshot>/` (the static data the frontend reads):
+
+- `flights_baseline.json` / `flights_recommended.json` - top flights by fuel,
+  downsampled, coordinates rounded, route as `path: [[lon, lat], ...]`, with
+  baseline + optimized fields and per-flight `cost_saved_usd`.
+- `h3_fuel.json` / `h3_traffic.json` - `{hex, value, fuel_kg, n_flights, mean_kg,
+  congestion}` (the `value` field is fuel or flight count depending on the file).
+- `sectors.json` - GeoJSON; properties merge geometry with occupancy
+  (`peak_load`, `over_demand`, `load_by_bin`).
+- `summary.json` - the summary with cost fields (`cost_saved_usd`,
+  `fuel_price_usd_per_kg`) added.
+- `snapshots.json` (at the data root) - the snapshot list and the showcase id.
+- `weather/frame_*.png` - radar frames for the timeline (`src/web_animation.py`).
+
+The FastAPI backend serves the `data/artifacts/` versions; the frontend's static
+path reads the `frontend/public/data/` versions. Both originate from the same
+pipeline. See [API.md](API.md) and [FRONTEND.md](FRONTEND.md).
